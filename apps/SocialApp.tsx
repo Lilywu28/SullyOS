@@ -530,9 +530,13 @@ ${charContexts}
             const prompt = `### 任务: 模拟社交APP评论区
 **帖子来源**: "Spark" 社区
 **楼主**: "${post.authorName}" (${authorType})
-**帖子**: "${post.title}"
+**帖子标题**: "${post.title}"
+**帖子正文**:
+"""
+${post.content || '(楼主没写正文)'}
+"""
 
-请生成 4-6 条评论。混合使用 **选定角色** 和 **随机路人**。
+请基于上面的【标题 + 正文】生成 4-6 条评论，评论要切实回应正文里提到的内容，不要只对着标题空泛地说。混合使用 **选定角色** 和 **随机路人**。
 角色评论时，请选择一个符合语境的马甲身份。
 
 ### 角色身份库
@@ -604,10 +608,27 @@ ${contextPrompt}
                 identityMap += `- ${char.name}: ${hList}\n`;
             });
 
+            // Tell the model who actually wrote the post — if it's the user themselves, replies
+            // need to make sense as people responding to the user's own note (not strangers).
+            let postAuthorInfo = `"${post.authorName}"`;
+            if (post.authorType === 'user') postAuthorInfo += ' (用户本人)';
+            else if (post.authorType === 'character' && post.authorCharId) {
+                const c = characters.find(ch => ch.id === post.authorCharId);
+                if (c) postAuthorInfo += ` (角色 ${c.name} 的马甲)`;
+            } else if (post.authorName === socialProfile.name) {
+                postAuthorInfo += ' (用户本人)';
+            }
+
             const prompt = `### 任务: 回复用户的评论
-**场景**: 用户 "${socialProfile.name}" 在帖子下发了一条评论: "${userContent}"。
-**帖子**: "${post.title}"
-请生成 1-3 条对用户评论的回复。
+**帖子楼主**: ${postAuthorInfo}
+**帖子标题**: "${post.title}"
+**帖子正文**:
+"""
+${post.content || '(楼主没写正文)'}
+"""
+**用户 "${socialProfile.name}" 刚在帖子下发的评论**: "${userContent}"
+
+请基于楼主帖子的【标题 + 正文】+ 用户的评论上下文，生成 1-3 条对用户这条评论的回复，要扣题，不能脱离正文凭空发挥。
 ${identityMap}
 
 ### 禁令
