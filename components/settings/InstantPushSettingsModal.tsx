@@ -30,6 +30,10 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
   const [testStatus, setTestStatus] = useState('');
   const [testBusy, setTestBusy] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
+  const [gitUrlStatus, setGitUrlStatus] = useState('');
+
+  const INSTANT_PUSH_GIT_URL =
+    'https://github.com/qegj567-cloud/SullyOS/tree/master/worker/instant-push';
 
   useEffect(() => {
     if (!open) return;
@@ -88,6 +92,17 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
     } catch (e) {
       const err = e as { message?: string } | null;
       setCopyStatus('');
+      addToast(`复制失败：${err?.message ?? '未知错误'}`, 'error');
+    }
+  };
+
+  const handleCopyGitUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(INSTANT_PUSH_GIT_URL);
+      setGitUrlStatus('已复制');
+      setTimeout(() => setGitUrlStatus(''), 2000);
+    } catch (e) {
+      const err = e as { message?: string } | null;
       addToast(`复制失败：${err?.message ?? '未知错误'}`, 'error');
     }
   };
@@ -252,14 +267,14 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
         {/* ② 部署 Worker */}
         <div className="bg-slate-50 rounded-2xl p-4 space-y-2">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">② 部署 Worker</p>
-          <p className="text-[11px] text-slate-500 leading-relaxed">点「复制 env 清单」会自动生成 VAPID 密钥对（首次）并写入剪贴板，然后把 Worker 代码贴进 CF 后台。</p>
+          <p className="text-[11px] text-slate-500 leading-relaxed">在 CF 后台选「Clone a public repository via Git URL」，粘贴下面的 Git URL；再点「复制 env 清单」把 VAPID 公钥/私钥粘进 Worker 的 Variables。</p>
 
           <div className="grid grid-cols-3 gap-2">
             <button
-              onClick={() => void handleCopyWorkerCode()}
-              className="py-2 rounded-xl text-[11px] font-bold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+              onClick={() => void handleCopyGitUrl()}
+              className="py-2 rounded-xl text-[11px] font-bold bg-indigo-500 text-white hover:bg-indigo-600"
             >
-              {copyStatus || '复制 Worker 代码'}
+              {gitUrlStatus || '复制 Git URL'}
             </button>
             <button
               onClick={() => void handleCopyEnv()}
@@ -273,6 +288,15 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
               className="py-2 rounded-xl text-[11px] font-bold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
             >
               ↗ CF Dashboard
+            </button>
+          </div>
+
+          <div className="flex items-center justify-end pt-1">
+            <button
+              onClick={() => void handleCopyWorkerCode()}
+              className="text-[11px] text-slate-400 hover:text-slate-600 underline-offset-2 hover:underline"
+            >
+              {copyStatus ? `备用方案：${copyStatus}` : '备用方案：复制 worker.bundle.js 手动粘贴'}
             </button>
           </div>
 
