@@ -23,25 +23,32 @@ export interface Like520Anchor {
     item_label: string;
     /** 一个 emoji 代表这件事，如 "🍰"/"🪮"/"💧"/"🖼️" */
     item_icon: string;
-    /** 场景旁白（第三人称小场景描写，会作为灰字小注脚显示，可写 char 的动作/环境） */
+    /** 场景旁白（第三人称小场景描写，可写 char 的动作/环境） */
     scene: string;
-    /** char 的对白行数组。**纯对白**，不要在文本里写 (捂嘴) (${userName} 愣住) 这种舞台指示。每条数组项 = 一个独立气泡，按顺序推进。 */
+    /** char 的对白行数组。每条 = 一个气泡，按顺序推进。 */
     dialogue: string[];
     is_photo_anchor: boolean;
 }
 
 export interface Like520CallAResult {
     relation_frame: { type: Like520RelationFrame; frame_note: string };
-    opening: string;
-    tucao_responses: Record<Like520TucaoKey, string>;
+    /** 开场对白行数组（每条 = 一个气泡） */
+    opening: string[];
+    /** 三种吐槽反应的回应，每个回应也是行数组 */
+    tucao_responses: Record<Like520TucaoKey, string[]>;
+    /** 6-8 个锚点，最后一个必须是合照锚点 */
     anchors: Like520Anchor[];
-    reveal_transition: string;
-    uncovered_line: string;
+    /** 抚摸 / 闲互动随机台词池，8-15 条短句，user 点 chibi 时随机/循环播放 */
+    touch_lines: string[];
+    /** 翻完所有锚点后的过渡台词数组，**最后一句必须把视线引向 user 自己** */
+    reveal_transition: string[];
+    /** 第二次捏脸结束后那一句没捂嘴的话（1-2 行） */
+    uncovered_line: string[];
     ending: { title: string; description: string };
 }
 
 export interface Like520CallBResult {
-    wake_up: string;
+    wake_up: string[];
     letter: string;
 }
 
@@ -215,7 +222,7 @@ ta 一直以为是你在照顾 ta。
    - 「你怎么变小了！」（becamesmall） → 你的回应（短，带"？？？你有意见？"的不解感）
    - 「你今天好可爱！」（cute） → 你的回应（短，可能下意识回敬）
    - 「这什么天杀的养成游戏」（yangcheng_meta） → 你的回应（短，可能完全不懂梗）
-4. **锚点剧本**（anchors）：4-6 个锚点。**这是养成游戏的核心机制**——
+4. **锚点剧本**（anchors）：**6-8 个锚点**（**少于 6 个就太短了，让 ${userName} 没玩够**）。**这是养成游戏的核心机制**——
 
    **每个锚点 = ${userName} 对你做的一个具体动作 + 你对这个动作的反应**。${userName} 在场景里看到一排小道具图标（食物/梳子/玩具/水杯……），ta 点一个 → 那个 anchor 触发 → 你说话。
 
@@ -295,8 +302,51 @@ ta 一直以为是你在照顾 ta。
 
    - \`item_label\`：类似"看相册"/"翻翻东西"/"打开抽屉"
    - \`item_icon\`：🖼️ / 📷 / 💝 / 📔
-   - \`scene\`：${userName} 翻到/打开/递出某个有你们两个小小合照的物件
+   - \`scene\`：${userName} 翻到/打开/递出某个物件——里面是**一张合照，两个小小的并肩**。**scene 旁白必须明确写出"两个小小的"或"两个一样高的"那种描述**，否则 ${userName} 可能看不出来这张合照上 ta 也是小的。
    - \`dialogue\`：含一句类似"……啊那个啊"/"我一直放在这里的"，**不解释，自然过去**。可以再加一句生活化的话作为收尾（比如"……你看到啦"），但不要长篇大论。
+
+---
+
+4.5. **抚摸/闲聊台词池**（touch_lines）：**8-15 条**短句。
+
+   这是 ${userName} **不点道具时**——比如直接戳/摸/碰你的头——你随机蹦出来的反应。和锚点不同，touch_lines **不消耗、可以重复触发**，是"两个人的空白时间"的填充。
+
+   ### 这一段不是 throwaway
+   v5.1 说"除了物品还可以纯聊天"——这些 touch_lines 就是那个"纯聊天"的形状。它们**也要承担母题**，只是用更碎的方式。
+
+   ### ❌ 别这样写（废稿）
+   - 「呜哇～」
+   - 「干嘛啦～」
+   - 「好痒呀！」
+   - 「不要摸我啦～」
+   - 「嘿嘿，被你发现了」
+   - 任何纯撒娇/无信息含量/可以放到任何 chibi 桌宠里的话
+
+   ### ✅ 参考方向（混着写，10-15 条覆盖多种调性）
+
+   **A. 小撒娇 + 一丝真心泄露**（占大概一半）：
+   - 「你的手……比我记得的暖一点」
+   - 「不要走开啦」
+   - 「再多碰一下嘛」「……我没说」
+
+   **B. 突然的真心碎片，然后立刻挪开话题**（占大概 1/3）：
+   - 「你今天来得有点晚——」「……我没在等你」
+   - 「你头发又长了」「……是我看错了」
+   - 「你的指尖凉的」「你也别太累」
+
+   **C. 偷瞄/沉默式（占少数）**：
+   - 「……」
+   - 「（小声）今天你来真好。」
+   - 「……嗯。」
+
+   ### 字数 & 节奏
+   - 每条 **5-20 字**
+   - 短句、省略号、停顿
+   - 不重复套路，每条都有自己的钩子
+   - 数组至少 8 条，最多 15 条
+
+---
+
 5. **翻完线索后的过渡台词**（reveal_transition）：所有锚点翻完后你说的承接话。
 
    ### 这一段的功能
@@ -331,35 +381,62 @@ ta 一直以为是你在照顾 ta。
    - 总长 **2-4 句**——再多就稀释了
    - 大量使用 **"……" 和停顿**
    - 最后一句话要带"邀请感"，让 UI 自然引出捏脸界面（"过来""你看看""我想看看你"这种）
-6. **那一句没捂嘴的话**（uncovered_line）：在所有锚点之后、user 捏脸之后、结局画面之前。
+6. **那一段没捂嘴的话**（uncovered_line）：
 
-   ### 这一段的灵魂
-   - 前面所有真心话都被你**捂嘴打断**了
-   - 这一句**没打断、没补救、没"啊我不是说"**
-   - **不打断本身就是这一句的重量**，不是内容有多大
+   ### 时机 & 灵魂
+   - 位置：所有锚点之后，${userName} 第二次捏脸（揭晓 ta 也是小小的）之后，结局画面之前
+   - **这是整个 chibi 状态最后的真心倾泻**——前面所有 anchor 都被你捂嘴打断了，这一段**所有捂嘴都失效，全部一股脑说出来**
+   - 这是 chibi 状态下你能说的话里最深、最长、最不像平时的你的一段
 
-   ### ❌ 别让它变成"迷你的我爱你"
-   信里才说"我爱你"。这一句**不是表白**，是**承认**。
-   - 「我喜欢你」/「我爱你」/「520 快乐」→ **绝对禁止**
-   - 「谢谢你来到我身边」「能遇见你真好」→ 这种"小爱情金句"也别写——太工整、太预期、像广告词
-   - 太煽情的长句（"今天和你在一起的每一秒……"） → 废
-   - "谢谢你"句式如果用，**只能是窄义的、具体的**（不是泛泛感谢人生）
+   ### ⚠️ 关键——**这段必须是长篇，不是一两句**
 
-   ### ✅ 参考质感（这次的方向：**安静的承认**，不是甜的告白）
+   之前的版本要求"1-2 句、短句、克制"——**那是错的**。一两句的"安静承认"会让母题落不下来。
 
-   - 「……今天你也来了。」
-   - 「……你也一直都在。」
-   - 「……嗯。」「就这样也很好。」
-   - 「我看到你了。」（不是"我看见你"——是更小一点的"看到"）
-   - 「……你也是小小的呀。」（如果合照锚点已经埋好了揭晓）
-   - 「你不用做这么多的。」「我都知道。」
-   - 「……我一直都在等你。」「不是开玩笑。」
+   这一段是 chibi 状态的**催化高潮**：你终于不打断自己了，所有"我看见你"、"你是什么样的人"、"你不用做这么多"、"我所观察到的一切"——全部一次性说出来。
 
-   ### 字数 & 节奏
-   - **1-2 句**。**不要超过 2 句**。
-   - 优先**短句**。一个 7 字以内的句子 + 一个 5 字以内的补充。
-   - 用**"……"** 而不是修饰词
-   - 这一句要轻——但**轻得像石头沉到水里**，不是轻飘飘
+   ### 内容结构（按这个层次铺开，每层都要写）
+
+   你要把这段写成一个**层层递进的深度剖析**——不是"我爱你"的告白，是**你这段时间里看着 ${userName} 一直在做的事、一直承担的、一直在 ta 自己的世界里独自扛着的样子**，一口气说完。
+
+   建议层次（不一定按这个顺序，但每层都要碰到）：
+
+   **a. 点题揭晓**：承认你也看见了 ta 也是小小的——但**不是直白说"你也是小小的"**，是用一个细节让 ta 自己接住（比如"……你坐过来的时候，我刚才注意到了"）
+
+   **b. 描述 ta 是什么样的人**：**具体的姿态/动作/瞬间，不是抽象赞美**。你看到 ta 在 ta 自己的世界里是什么样子的——ta 来见你之前那几分钟的样子；ta 在 ta 自己那边累得不行还是想你的样子；ta 想让你变得更好的样子；ta 撑着多少东西却以为没人看见的样子。
+      - **写具体动作，写得密**——一个 anchor 里的细节 + 一个生活里的姿态 + 一个 ta 自己可能从没意识到的小动作
+      - 这部分是这段的**主体**，最长
+
+   **c. 颠倒"谁在照顾谁"**：把整个下午 ta 照顾你的画面翻过来——其实你一直在看的是 ta 自己也需要被照顾。直接说："你不用做这么多的。"/"我都知道。"
+
+   **d. 我们的关系是什么**：不要解释，用一个具体的小观察——「你来见我之前会先想一下今天聊什么。」「我也注意到了。」这种粒度。
+
+   **e. 我所爱的你在我眼里如此珍重**——但**不说"我爱你"**（信里说），说"我看到你了"/"全部都看到了"/"我一直在看"。
+
+   ### 字数 & 节奏（要长）
+
+   - **dialogue 数组 12-25 行**（每行一个气泡）
+   - 这一段总长**至少 250 字**，理想 350-500 字
+   - 节奏可以慢——大量"……" + 短句 + 偶尔一个稍长的句子
+   - 不要怕重复某个观察——重复本身也是情绪——比如"你不用"/"我都知道"可以变形说两次
+   - 不要写成抒情诗——保持**具体、有动作、有姿态**
+
+   ### ❌ 严禁
+
+   - 「我爱你」/「我喜欢你」/「520 快乐」（这是信的事）
+   - 「谢谢你」泛泛感激（除非接具体动作）
+   - 押韵、排比、打油诗
+   - 末尾用一个总结句收尾（"总之你就是这样的人"）——**让最后一句话留个气口**
+   - 一段全是抽象赞美，没一个具体动作/姿态——直接重写
+
+   ### ✅ 起调示例（不要直接抄）
+
+   开头可以是这种感觉：
+   - 「……你刚才坐过来的时候，我看到了。」
+   - 「不用解释。」
+   - 「我知道你也是小小的——其实，在我眼里你一直都是。」
+   - 「（停顿）我跟你说一件事。」
+
+   然后展开 b/c/d/e 那几层。结尾留气口，**不要总结**。
 7. **结局画面文案**（ending.title + ending.description）：标题（一句话，每次不同）+ END 下方那一行说明（柔和，不解释，不点题）。
 
 ### 结局气质池（灵感调色盘，不强制）
@@ -387,36 +464,49 @@ ${recentMsgs}
 
 严格按以下 JSON 输出，不要任何额外文字：
 
+**注意**：所有 dialogue / opening / tucao_responses 字段 / reveal_transition / uncovered_line / touch_lines / wake_up 都是 **string[] 数组**。每条数组项 = 一个气泡 = ${userName} 点 ▽ 推进一次。
+
 \`\`\`json
 {
   "relation_frame": {
     "type": "same_space | long_distance | different_world | other",
     "frame_note": "一句话判定依据"
   },
-  "opening": "开场对白",
+  "opening": ["开场第一句", "开场第二句（如果有）", "..."],
   "tucao_responses": {
-    "becamesmall": "对'你怎么变小了！'的回应",
-    "cute": "对'你今天好可爱！'的回应",
-    "yangcheng_meta": "对'这什么天杀的养成游戏'的回应"
+    "becamesmall": ["对'你怎么变小了！'的回应（1-3 句）"],
+    "cute": ["对'你今天好可爱！'的回应（1-3 句）"],
+    "yangcheng_meta": ["对'这什么天杀的养成游戏'的回应（1-3 句）"]
   },
   "anchors": [
     {
       "item_label": "投喂",
       "item_icon": "🍰",
       "scene": "场景旁白一两句，写 char 的动作/环境，不写 user 的反应",
-      "dialogue": ["第一句对白", "第二句对白", "第三句对白（如果有的话，捂嘴节奏靠分行不靠括号）"],
+      "dialogue": ["第一句对白", "第二句对白", "第三句（捂嘴节奏靠分行）"],
       "is_photo_anchor": false
     },
+    "... 共 6-8 个 anchor，最后一个必须 is_photo_anchor=true ...",
     {
       "item_label": "看相册",
       "item_icon": "🖼️",
-      "scene": "${userName} 翻到/打开/递出有你们两个小小合照的物件",
+      "scene": "${userName} 翻到/打开/递出物件——里面是两个小小的，你们并肩",
       "dialogue": ["……啊那个啊。", "我一直放在这里的。"],
       "is_photo_anchor": true
     }
   ],
-  "reveal_transition": "翻完线索后你说的过渡话（不直接揭晓 ta 也变小了）",
-  "uncovered_line": "那一句没捂嘴的话（1-2 句，不被打断）",
+  "touch_lines": [
+    "8-15 句短句，${userName} 摸你头/碰你时随机蹦出来的反应",
+    "短，碎片化，5-15 字一句",
+    "可以混 chibi 状态下的小撒娇 + 偶尔泄露的真心碎片",
+    "..."
+  ],
+  "reveal_transition": [
+    "翻完线索后的过渡台词（2-4 句）",
+    "...",
+    "最后一句必须**把视线从场景/物件转到 ${userName} 自己身上**"
+  ],
+  "uncovered_line": ["那一句没捂嘴的话（1-2 句，不被打断）"],
   "ending": {
     "title": "结局标题（用你自己的话重写气质，不要直接抄气质池）",
     "description": "END 下方那一行"
@@ -434,7 +524,7 @@ export function buildCallBPrompt(
         .map((a, i) => `${i + 1}. [${a.item_label}] ${a.scene}\n   ${a.dialogue.join(' / ')}`)
         .join('\n\n');
     const tucaoText = TUCAO_LABELS[chosenTucao];
-    const myTucaoResponse = callA.tucao_responses[chosenTucao];
+    const myTucaoResponse = callA.tucao_responses[chosenTucao].join(' / ');
 
     return `### 特别活动：520（2026.5.20） — 收尾段
 
@@ -469,7 +559,7 @@ export function buildCallBPrompt(
 
 关系框架：\`${callA.relation_frame.type}\` — ${callA.relation_frame.frame_note}
 
-开场：「${callA.opening}」
+开场：「${callA.opening.join(' / ')}」
 
 ${userName} 的反应：「${tucaoText}」
 你的回应：「${myTucaoResponse}」
@@ -477,9 +567,9 @@ ${userName} 的反应：「${tucaoText}」
 锚点们：
 ${anchorsText}
 
-翻完线索的过渡：「${callA.reveal_transition}」
+翻完线索的过渡：「${callA.reveal_transition.join(' / ')}」
 
-你最后没捂嘴说的那句：「${callA.uncovered_line}」
+你最后没捂嘴说的那句：「${callA.uncovered_line.join(' / ')}」
 
 结局画面：${callA.ending.title}
 ${callA.ending.description}
@@ -570,26 +660,63 @@ ${userName} 在你这里感觉到的所有好的东西——**全部都是 ${use
 // 校验
 // ============================================================
 
+/** 宽容把字段规整为 string[]：如果 LLM 不小心输出 string，自动按 \n 或者整体包成数组 */
+function toLines(v: any): string[] | null {
+    if (Array.isArray(v)) {
+        const cleaned = v.map(s => (typeof s === 'string' ? s.trim() : '')).filter(s => !!s);
+        return cleaned.length > 0 ? cleaned : null;
+    }
+    if (typeof v === 'string' && v.trim()) {
+        const parts = v.split(/\n+/).map(s => s.trim()).filter(Boolean);
+        return parts.length > 0 ? parts : null;
+    }
+    return null;
+}
+
 function validateCallA(parsed: any): parsed is Like520CallAResult {
     if (!parsed || typeof parsed !== 'object') return false;
     const rf = parsed.relation_frame;
     if (!rf || typeof rf.type !== 'string' || typeof rf.frame_note !== 'string') return false;
     if (!['same_space', 'long_distance', 'different_world', 'other'].includes(rf.type)) return false;
-    if (typeof parsed.opening !== 'string' || !parsed.opening.trim()) return false;
+
+    // opening / reveal_transition / uncovered_line / touch_lines 宽容化
+    const openingLines = toLines(parsed.opening);
+    if (!openingLines) return false;
+    parsed.opening = openingLines;
+
+    const revealLines = toLines(parsed.reveal_transition);
+    if (!revealLines) return false;
+    parsed.reveal_transition = revealLines;
+
+    const uncoveredLines = toLines(parsed.uncovered_line);
+    if (!uncoveredLines) return false;
+    parsed.uncovered_line = uncoveredLines;
+
+    const touchLines = toLines(parsed.touch_lines);
+    if (!touchLines || touchLines.length < 3) return false;
+    parsed.touch_lines = touchLines;
+
+    // tucao_responses 三个 key 都规整为 string[]
     const tr = parsed.tucao_responses;
-    if (!tr || typeof tr.becamesmall !== 'string' || typeof tr.cute !== 'string' || typeof tr.yangcheng_meta !== 'string') return false;
+    if (!tr || typeof tr !== 'object') return false;
+    for (const k of ['becamesmall', 'cute', 'yangcheng_meta'] as const) {
+        const lines = toLines(tr[k]);
+        if (!lines) return false;
+        tr[k] = lines;
+    }
+
     if (!Array.isArray(parsed.anchors) || parsed.anchors.length === 0) return false;
     for (const a of parsed.anchors) {
         if (!a || typeof a.scene !== 'string' || typeof a.is_photo_anchor !== 'boolean') return false;
         if (typeof a.item_label !== 'string' || !a.item_label.trim()) return false;
         if (typeof a.item_icon !== 'string' || !a.item_icon.trim()) return false;
-        if (!Array.isArray(a.dialogue) || a.dialogue.length === 0) return false;
-        if (a.dialogue.some((line: any) => typeof line !== 'string' || !line.trim())) return false;
+        const dlg = toLines(a.dialogue);
+        if (!dlg) return false;
+        a.dialogue = dlg;
     }
     const last = parsed.anchors[parsed.anchors.length - 1];
     if (!last.is_photo_anchor) return false;
-    if (typeof parsed.reveal_transition !== 'string' || !parsed.reveal_transition.trim()) return false;
-    if (typeof parsed.uncovered_line !== 'string' || !parsed.uncovered_line.trim()) return false;
+
     const e = parsed.ending;
     if (!e || typeof e.title !== 'string' || typeof e.description !== 'string') return false;
     return true;
@@ -597,7 +724,9 @@ function validateCallA(parsed: any): parsed is Like520CallAResult {
 
 function validateCallB(parsed: any): parsed is Like520CallBResult {
     if (!parsed || typeof parsed !== 'object') return false;
-    if (typeof parsed.wake_up !== 'string' || !parsed.wake_up.trim()) return false;
+    const wakeLines = toLines(parsed.wake_up);
+    if (!wakeLines) return false;
+    parsed.wake_up = wakeLines;
     if (typeof parsed.letter !== 'string' || !parsed.letter.trim()) return false;
     return true;
 }
@@ -702,8 +831,10 @@ export async function runLike520CallA(
     recentMessages: Message[]
 ): Promise<Like520CallAResult> {
     // 召回 520 主题记忆
-    await injectMemoryPalace(char as any, undefined, LIKE520_QUERY_HINT);
-    console.log('[520][CallA] memory palace injection:', (char as any).memoryPalaceInjection || '(none)');
+    // 关键：传空 recentMessages，强制 retrieveMemories 走"冷启动 fallback"路径——
+    // 用 queryHint 作为唯一 query 单路检索，不会被近期闲聊话题稀释成"随便 15 条"。
+    await injectMemoryPalace(char as any, [], LIKE520_QUERY_HINT);
+    console.log('[520][CallA] memory palace injection:\n', (char as any).memoryPalaceInjection || '(none)');
 
     const baseContext = ContextBuilder.buildCoreContext(char, userProfile, true);
     const recentMsgs = recentMessages

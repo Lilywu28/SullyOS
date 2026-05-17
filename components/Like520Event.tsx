@@ -57,8 +57,8 @@ export const isLike520Past = (): boolean => {
 // ============================================================
 
 type Phase =
-    | 'intro' | 'char_creator' | 'loading_a' | 'opening'
-    | 'tucao_select' | 'tucao_reply' | 'anchors' | 'reveal_transition'
+    | 'intro' | 'char_creator' | 'loading_a'
+    | 'yangcheng'           // 持久化养成容器：opening → tucao → 锚点 → reveal_transition → 自我意识
     | 'user_creator' | 'uncovered_line' | 'ending_screen'
     | 'loading_b' | 'wake_up' | 'letter' | 'puzzle' | 'done' | 'error';
 
@@ -143,77 +143,171 @@ const CreatorIframe: React.FC<CreatorIframeProps> = ({ mode, charName, presets, 
 };
 
 // ============================================================
-// 小工具：fade-in 显示一段对白
+// 小工具：galgame 风格对白盒（白底 + 名牌 + ▽）
 // ============================================================
 
-const DialogueLine: React.FC<{ text: string; onNext?: () => void; nextLabel?: string }> = ({ text, onNext, nextLabel }) => (
-    <div className="flex flex-col items-center justify-center px-8 py-12 max-w-md mx-auto animate-fade-in">
-        <div className="bg-white/85 backdrop-blur-md rounded-3xl px-7 py-6 shadow-xl text-[#5C3A4A] text-base leading-relaxed whitespace-pre-wrap">
-            {text}
+const DialogueBox: React.FC<{
+    charName: string;
+    text?: string;
+    children?: React.ReactNode;
+    onAdvance?: () => void;
+    showArrow?: boolean;
+    arrowGlyph?: string;
+    minHeight?: number;
+    pageInfo?: string;
+}> = ({ charName, text, children, onAdvance, showArrow, arrowGlyph = '▽', minHeight = 110, pageInfo }) => (
+    <div
+        onClick={onAdvance}
+        className={`relative rounded-2xl p-5 pb-4 ${onAdvance ? 'cursor-pointer active:opacity-90' : ''}`}
+        style={{
+            background: 'linear-gradient(180deg, rgba(255,255,255,0.97) 0%, rgba(255,248,241,0.97) 100%)',
+            boxShadow: '0 8px 24px rgba(199, 97, 130, 0.2), inset 0 0 0 2px rgba(212, 165, 116, 0.25)',
+            minHeight: `${minHeight}px`,
+        }}
+    >
+        <div className="absolute -top-2 left-4 bg-[#5C3A2E] text-white text-[11px] font-bold px-3 py-1 rounded-lg shadow tracking-wider">
+            {charName}
         </div>
-        {onNext && (
-            <button
-                onClick={onNext}
-                className="mt-8 px-8 py-3 rounded-full bg-gradient-to-r from-[#FFB6C8] to-[#F18AAA] text-white font-bold shadow-lg active:scale-95 transition-transform"
-            >
-                {nextLabel ?? '继续 ♥'}
-            </button>
+        {pageInfo && (
+            <div className="absolute -top-2 right-4 bg-white/95 text-[#9D7585] text-[10px] font-bold px-2.5 py-0.5 rounded-lg shadow border border-[#FCEDD9]">
+                {pageInfo}
+            </div>
+        )}
+        {children}
+        {text !== undefined && (
+            <div className="text-[#5C3A4A] text-[14px] leading-[1.85] pt-2 whitespace-pre-wrap animate-fade-in">
+                {text}
+            </div>
+        )}
+        {showArrow && (
+            <div className="absolute bottom-2 right-3 text-[#C76182]/70 text-sm animate-pulse">
+                {arrowGlyph}
+            </div>
         )}
     </div>
 );
 
 // ============================================================
-// 养成场景视图（锚点 = 道具，点道具触发对白）
+// Y520Scene — 持久化养成场景容器
+// 覆盖 opening → 吐槽选择 → 吐槽回应 → free（锚点+抚摸）→ reveal_transition → 自我意识
 // ============================================================
 
-interface YangchengSceneProps {
-    anchors: Like520CallAResult['anchors'];
+type Y520Stage =
+    | 'opening'
+    | 'tucao_choose'
+    | 'tucao_reply'
+    | 'free'
+    | 'anchor_playing'
+    | 'touch_playing'
+    | 'reveal'
+    | 'self_reveal_hint';
+
+const SELF_REVEAL_HINT_LINES = ['（你下意识低头看了看自己——）', '诶？'];
+
+interface Y520SceneProps {
+    callA: Like520CallAResult;
     charName: string;
     charAvatar?: string;
     charChibiUrl: string;
+    onTucaoSelected: (key: Like520TucaoKey) => void;
     onComplete: () => void;
 }
 
-const YangchengScene: React.FC<YangchengSceneProps> = ({ anchors, charName, charAvatar, charChibiUrl, onComplete }) => {
-    const [usedIdx, setUsedIdx] = useState<Set<number>>(new Set());
-    const [activeAnchor, setActiveAnchor] = useState<number | null>(null);
+const Y520Scene: React.FC<Y520SceneProps> = ({ callA, charName, charAvatar, charChibiUrl, onTucaoSelected, onComplete }) => {
+    const [stage, setStage] = useState<Y520Stage>('opening');
+    const [queue, setQueue] = useState<string[]>(callA.opening);
     const [lineIdx, setLineIdx] = useState(0);
+    const [usedAnchors, setUsedAnchors] = useState<Set<number>>(new Set());
+    const [activeAnchorIdx, setActiveAnchorIdx] = useState<number | null>(null);
+    const [touchIdx, setTouchIdx] = useState(0);
 
-    const moodPct = Math.round((usedIdx.size / Math.max(anchors.length, 1)) * 100);
-    const allUsed = usedIdx.size >= anchors.length;
-    const active = activeAnchor !== null ? anchors[activeAnchor] : null;
+    const allAnchorsUsed = usedAnchors.size >= callA.anchors.length;
+    const currentLine = queue[lineIdx];
+    const hasMoreLines = lineIdx < queue.length - 1;
+    const moodPct = Math.min(100, Math.round((usedAnchors.size / Math.max(callA.anchors.length, 1)) * 100));
 
-    // 所有道具用完 → 自动 onComplete
+    // free 阶段 + 所有锚点用完 → 自动进入 reveal
     useEffect(() => {
-        if (allUsed && activeAnchor === null) {
-            const t = setTimeout(onComplete, 600);
+        if (stage === 'free' && allAnchorsUsed) {
+            const t = setTimeout(() => {
+                setQueue(callA.reveal_transition);
+                setLineIdx(0);
+                setStage('reveal');
+            }, 700);
             return () => clearTimeout(t);
         }
-    }, [allUsed, activeAnchor, onComplete]);
+    }, [stage, allAnchorsUsed, callA.reveal_transition]);
 
-    const startAnchor = (idx: number) => {
-        if (usedIdx.has(idx) || activeAnchor !== null) return;
-        setActiveAnchor(idx);
-        setLineIdx(0);
-    };
-
-    const advanceLine = () => {
-        if (active === null || activeAnchor === null) return;
-        if (lineIdx < active.dialogue.length - 1) {
+    const advance = () => {
+        if (!queue.length) return;
+        if (hasMoreLines) {
             setLineIdx(i => i + 1);
-        } else {
-            // 这个 anchor 演完了 → 消耗道具
-            setUsedIdx(prev => new Set(prev).add(activeAnchor));
-            setActiveAnchor(null);
+            return;
+        }
+        // 最后一行 → 阶段切换
+        if (stage === 'opening') {
+            setStage('tucao_choose');
+            setQueue([]);
             setLineIdx(0);
+        } else if (stage === 'tucao_reply') {
+            setStage('free');
+            setQueue([]);
+            setLineIdx(0);
+        } else if (stage === 'anchor_playing') {
+            if (activeAnchorIdx !== null) {
+                setUsedAnchors(prev => new Set(prev).add(activeAnchorIdx));
+            }
+            setActiveAnchorIdx(null);
+            setStage('free');
+            setQueue([]);
+            setLineIdx(0);
+        } else if (stage === 'touch_playing') {
+            setStage('free');
+            setQueue([]);
+            setLineIdx(0);
+        } else if (stage === 'reveal') {
+            setQueue(SELF_REVEAL_HINT_LINES);
+            setLineIdx(0);
+            setStage('self_reveal_hint');
+        } else if (stage === 'self_reveal_hint') {
+            onComplete();
         }
     };
 
+    const pickTucao = (key: Like520TucaoKey) => {
+        if (stage !== 'tucao_choose') return;
+        onTucaoSelected(key);
+        setQueue(callA.tucao_responses[key]);
+        setLineIdx(0);
+        setStage('tucao_reply');
+    };
+
+    const startAnchor = (idx: number) => {
+        if (stage !== 'free' || usedAnchors.has(idx)) return;
+        setActiveAnchorIdx(idx);
+        setQueue(callA.anchors[idx].dialogue);
+        setLineIdx(0);
+        setStage('anchor_playing');
+    };
+
+    const touchChibi = () => {
+        if (stage !== 'free' || callA.touch_lines.length === 0) return;
+        const line = callA.touch_lines[touchIdx % callA.touch_lines.length];
+        setQueue([line]);
+        setLineIdx(0);
+        setStage('touch_playing');
+        setTouchIdx(i => i + 1);
+    };
+
+    const activeScene = stage === 'anchor_playing' && activeAnchorIdx !== null ? callA.anchors[activeAnchorIdx].scene : null;
+    const nameTag = stage === 'self_reveal_hint' ? '——' : charName;
+    const itemsCols = callA.anchors.length > 6 ? 'grid-cols-4' : 'grid-cols-3';
+
     return (
-        <div className="flex flex-col h-full max-w-md mx-auto relative">
-            {/* 顶部：char 名字 + 心情条 */}
-            <div className="flex items-center gap-3 px-4 pt-4 pb-2 shrink-0">
-                <div className="flex items-center gap-2 bg-[#5C3A2E]/90 rounded-full pl-1 pr-4 py-1 shadow">
+        <div className="flex flex-col h-full max-w-md mx-auto">
+            {/* Header */}
+            <div className="flex items-center gap-2 px-3 pt-3 pb-2 shrink-0">
+                <div className="flex items-center gap-2 bg-[#5C3A2E]/90 rounded-full pl-1 pr-3 py-1 shadow">
                     {charAvatar?.startsWith('http') || charAvatar?.startsWith('data:') ? (
                         <img src={charAvatar} alt={charName} className="w-7 h-7 rounded-full object-cover border-2 border-[#FFE4D5]" />
                     ) : (
@@ -224,104 +318,174 @@ const YangchengScene: React.FC<YangchengSceneProps> = ({ anchors, charName, char
                 <div className="flex-1 flex items-center gap-2 bg-[#5C3A2E]/90 rounded-full px-3 py-1.5 shadow">
                     <span className="text-[#FF6B7A] text-sm">❤</span>
                     <div className="flex-1 h-2 bg-white/20 rounded-full overflow-hidden">
-                        <div
-                            className="h-full bg-gradient-to-r from-[#FFB6C8] to-[#F18AAA] transition-all duration-700"
-                            style={{ width: `${moodPct}%` }}
-                        />
+                        <div className="h-full bg-gradient-to-r from-[#FFB6C8] to-[#F18AAA] transition-all duration-700" style={{ width: `${moodPct}%` }} />
                     </div>
                 </div>
             </div>
 
-            {/* 中心：场景 + chibi + 对白气泡 */}
-            <div
-                className="relative flex-1 mx-3 mb-2 rounded-3xl overflow-hidden"
-                style={{
-                    background: 'linear-gradient(180deg, #FFE8DC 0%, #FFD3DC 60%, #FFBFCB 100%)',
-                    boxShadow: 'inset 0 0 0 2px rgba(255,255,255,0.5)',
-                }}
-            >
-                <div className="absolute inset-0 flex items-center justify-center text-[10px] tracking-[8px] text-white/30 select-none">
-                    BG · TO BE DRAWN
-                </div>
-
-                {/* chibi */}
-                <div className="absolute inset-x-0 bottom-2 flex items-end justify-center">
-                    <img src={charChibiUrl} alt="chibi" className="h-[58%] max-h-72 object-contain drop-shadow-md" />
-                </div>
-
-                {/* 顶部场景旁白（active 时显示） */}
-                {active && (
-                    <div className="absolute top-3 left-0 right-0 px-6 text-center text-[11px] italic text-[#9D7585] animate-fade-in">
-                        {active.scene}
-                    </div>
-                )}
-
-                {/* 对白气泡 */}
-                {active && (
-                    <button
-                        onClick={advanceLine}
-                        className="absolute left-4 right-4 top-12 cursor-pointer"
-                    >
-                        <div
-                            key={`${activeAnchor}-${lineIdx}`}
-                            className="bg-white/95 backdrop-blur-md rounded-2xl px-5 py-4 shadow-lg text-[#5C3A4A] text-[14px] leading-relaxed text-left animate-fade-in"
-                            style={{
-                                boxShadow: '0 8px 24px rgba(199, 97, 130, 0.18)',
-                            }}
-                        >
-                            {active.dialogue[lineIdx]}
-                            <div className="mt-2 text-right text-[10px] text-[#9D7585]">
-                                {lineIdx < active.dialogue.length - 1 ? '点一下继续 →' : '点一下收起 ✓'}
-                            </div>
-                        </div>
-                    </button>
-                )}
-
-                {/* 空闲提示 */}
-                {!active && !allUsed && (
-                    <div className="absolute top-4 left-0 right-0 text-center">
-                        <div className="inline-block bg-white/95 backdrop-blur-md rounded-2xl px-5 py-3 shadow text-[#5C3A4A] text-[13px] animate-fade-in">
-                            {charName} 在等你做点什么呢～
-                        </div>
-                    </div>
-                )}
-                {!active && allUsed && (
-                    <div className="absolute top-4 left-0 right-0 text-center">
-                        <div className="inline-block bg-white/95 backdrop-blur-md rounded-2xl px-5 py-3 shadow text-[#5C3A4A] text-[13px] animate-fade-in">
-                            ……
-                        </div>
-                    </div>
-                )}
-            </div>
-
-            {/* 底部：道具栏 */}
-            <div className="px-3 pb-4 pt-1 shrink-0">
-                <div className="text-[10px] tracking-[6px] text-[#C76182] text-center mb-2">
-                    {active ? `正在 · ${active.item_label}` : allUsed ? '没有别的可做了……' : '点一个道具'}
-                </div>
-                <div className="flex gap-2 justify-center flex-wrap">
-                    {anchors.map((a, i) => {
-                        const used = usedIdx.has(i);
-                        const isActive = activeAnchor === i;
+            {/* Shelf (items) */}
+            <div className="px-3 pt-1 pb-1 shrink-0">
+                <div className={`grid gap-1.5 ${itemsCols}`}>
+                    {callA.anchors.map((a, i) => {
+                        const used = usedAnchors.has(i);
+                        const tappable = stage === 'free' && !used;
                         return (
                             <button
                                 key={i}
                                 onClick={() => startAnchor(i)}
-                                disabled={used || activeAnchor !== null}
-                                className={`flex flex-col items-center gap-0.5 px-2.5 py-2 rounded-2xl border-2 transition-all min-w-[64px] ${
+                                disabled={!tappable}
+                                className={`aspect-square flex flex-col items-center justify-center rounded-xl border-2 transition-all ${
                                     used
-                                        ? 'bg-white/30 border-[#FCEDD9]/40 opacity-30 line-through'
-                                        : isActive
-                                            ? 'bg-white border-[#F18AAA] shadow-md scale-105'
-                                            : 'bg-white/85 border-[#FCEDD9] active:scale-95 hover:bg-white shadow-sm'
+                                        ? 'bg-white/30 border-white/30 opacity-30'
+                                        : tappable
+                                            ? 'bg-white border-[#FCEDD9] active:scale-95 hover:bg-[#FFF8F1] shadow'
+                                            : 'bg-white/60 border-[#FCEDD9]/40 cursor-not-allowed'
                                 }`}
                             >
                                 <span className="text-2xl leading-none">{a.item_icon}</span>
-                                <span className="text-[10px] text-[#5C3A4A] font-bold tracking-wider">{a.item_label}</span>
+                                <span className="text-[9px] mt-0.5 text-[#5C3A4A] font-bold tracking-wider truncate w-full px-0.5">
+                                    {used ? '·' : a.item_label}
+                                </span>
                             </button>
                         );
                     })}
                 </div>
+            </div>
+
+            {/* Chibi area */}
+            <div className="flex-1 flex items-center justify-center min-h-0 relative">
+                <button
+                    onClick={touchChibi}
+                    disabled={stage !== 'free'}
+                    className={`relative h-full max-h-full flex items-center justify-center ${stage === 'free' ? 'cursor-pointer active:scale-95' : ''} transition-transform`}
+                    title={stage === 'free' ? '摸摸 ta' : ''}
+                >
+                    <img src={charChibiUrl} alt="chibi" className="max-h-full max-w-[70%] object-contain drop-shadow-md" />
+                </button>
+                {activeScene && (
+                    <div className="absolute top-1 left-0 right-0 text-center text-[11px] italic text-[#9D7585] px-4 animate-fade-in">
+                        {activeScene}
+                    </div>
+                )}
+            </div>
+
+            {/* Galgame dialogue box */}
+            <div className="px-3 pb-3 pt-2 shrink-0">
+                <DialogueBox
+                    charName={nameTag}
+                    onAdvance={stage === 'tucao_choose' ? undefined : (queue.length > 0 ? advance : undefined)}
+                    showArrow={!!(queue.length > 0 && stage !== 'tucao_choose')}
+                    arrowGlyph={stage === 'self_reveal_hint' && !hasMoreLines ? '→' : '▽'}
+                >
+                    {stage === 'tucao_choose' ? (
+                        <div className="pt-2 space-y-2">
+                            <div className="text-[10px] tracking-widest text-[#C76182] mb-1.5">你的反应是——</div>
+                            {TUCAO_OPTIONS.map(opt => (
+                                <button
+                                    key={opt.key}
+                                    onClick={(e) => { e.stopPropagation(); pickTucao(opt.key); }}
+                                    className="w-full px-4 py-2 rounded-xl bg-[#FFF1E6] border border-[#FCEDD9] text-[#5C3A4A] text-[13px] text-left active:scale-95 active:bg-[#FFE4D5] transition-all"
+                                >
+                                    「{opt.label}」
+                                </button>
+                            ))}
+                        </div>
+                    ) : currentLine ? (
+                        <div key={`${stage}-${lineIdx}`} className="text-[#5C3A4A] text-[14px] leading-[1.85] pt-2 whitespace-pre-wrap animate-fade-in">
+                            {currentLine}
+                        </div>
+                    ) : (
+                        <div className="text-[#9D7585]/70 text-[12px] italic pt-2">
+                            （{stage === 'free' && !allAnchorsUsed ? `摸摸 ${charName}，或者从架子上拿一样` : '……'}）
+                        </div>
+                    )}
+                </DialogueBox>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// LineQueueView — 短数组对白序列（用于 wake_up）
+// ============================================================
+
+const LineQueueView: React.FC<{
+    lines: string[];
+    charName: string;
+    onComplete: () => void;
+    bgGradient?: string;
+}> = ({ lines, charName, onComplete, bgGradient }) => {
+    const [idx, setIdx] = useState(0);
+    const isLast = idx >= lines.length - 1;
+    return (
+        <div className="flex flex-col h-full max-w-md mx-auto justify-end px-3 pb-8" style={bgGradient ? { background: bgGradient } : undefined}>
+            <DialogueBox
+                charName={charName}
+                onAdvance={() => { if (isLast) onComplete(); else setIdx(i => i + 1); }}
+                showArrow={true}
+                arrowGlyph={isLast ? '→' : '▽'}
+            >
+                <div key={idx} className="text-[#5C3A4A] text-[15px] leading-[1.9] pt-2 whitespace-pre-wrap animate-fade-in">
+                    {lines[idx]}
+                </div>
+            </DialogueBox>
+        </div>
+    );
+};
+
+// ============================================================
+// UncoveredLineView — 第二次捏脸后那段长篇真心话
+// 双 chibi 居中 + galgame 长对白盒推进
+// ============================================================
+
+const UncoveredLineView: React.FC<{
+    lines: string[];
+    charName: string;
+    charAvatar?: string;
+    charChibi: string;
+    userChibi: string;
+    onComplete: () => void;
+}> = ({ lines, charName, charAvatar, charChibi, userChibi, onComplete }) => {
+    const [idx, setIdx] = useState(0);
+    const isLast = idx >= lines.length - 1;
+
+    const advance = () => {
+        if (isLast) onComplete();
+        else setIdx(i => i + 1);
+    };
+
+    return (
+        <div className="flex flex-col h-full max-w-md mx-auto">
+            {/* Header */}
+            <div className="px-3 pt-3 pb-1 shrink-0">
+                <div className="flex items-center gap-2 bg-[#5C3A2E]/90 rounded-full pl-1 pr-4 py-1 shadow w-fit">
+                    {charAvatar?.startsWith('http') || charAvatar?.startsWith('data:') ? (
+                        <img src={charAvatar} alt={charName} className="w-7 h-7 rounded-full object-cover border-2 border-[#FFE4D5]" />
+                    ) : (
+                        <div className="w-7 h-7 rounded-full bg-[#FFE4D5] flex items-center justify-center text-sm">{charAvatar || '🌸'}</div>
+                    )}
+                    <span className="text-white text-xs font-bold tracking-wider">{charName}</span>
+                </div>
+            </div>
+            {/* Both chibis */}
+            <div className="flex-1 flex items-end justify-center gap-1 px-4 pb-1 min-h-0">
+                <img src={charChibi} alt="char" className="max-h-full max-w-[40%] object-contain drop-shadow-md" />
+                <img src={userChibi} alt="user" className="max-h-full max-w-[40%] object-contain drop-shadow-md" />
+            </div>
+            {/* Long monologue dialogue box */}
+            <div className="px-3 pb-3 pt-2 shrink-0">
+                <DialogueBox
+                    charName={charName}
+                    onAdvance={advance}
+                    showArrow={true}
+                    arrowGlyph={isLast ? '✓' : '▽'}
+                    pageInfo={`${idx + 1} / ${lines.length}`}
+                    minHeight={130}
+                >
+                    <div key={idx} className="text-[#5C3A4A] text-[14px] leading-[1.9] pt-2 whitespace-pre-wrap animate-fade-in">
+                        {lines[idx]}
+                    </div>
+                </DialogueBox>
             </div>
         </div>
     );
@@ -506,7 +670,7 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
             console.error('[520] Call B failed:', err);
             // 兜底：让用户在 wake_up/letter 阶段看到降级文案
             setCallB({
-                wake_up: '……我们好像一起做了一个梦呀。',
+                wake_up: ['……我们好像一起做了一个梦呀。', '不过，不是坏的那种。'],
                 letter: '（信生成出了点小问题。这是一段属于你的、未完成的话——但它一直在。）',
             });
         });
@@ -517,7 +681,7 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
     const handleCharChibiConfirm = useCallback((r: ChibiResult) => {
         setCharChibi(r);
         // 等 Call A 结果决定下一步
-        if (callA) setPhase('opening');
+        if (callA) setPhase('yangcheng');
         else setPhase('loading_a');
     }, [callA]);
 
@@ -526,10 +690,10 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
         setPhase('uncovered_line');
     }, []);
 
-    // 当 callA 在 loading_a 阶段返回时，自动推进到 opening
+    // 当 callA 在 loading_a 阶段返回时，自动推进到 yangcheng
     useEffect(() => {
         if (phase === 'loading_a' && callA) {
-            setPhase('opening');
+            setPhase('yangcheng');
         }
     }, [phase, callA]);
 
@@ -647,51 +811,14 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
 
             {phase === 'loading_a' && <LoadingView hint="ta 在准备这个下午…" />}
 
-            {phase === 'opening' && callA && (
-                <DialogueLine
-                    text={callA.opening}
-                    onNext={() => setPhase('tucao_select')}
-                />
-            )}
-
-            {phase === 'tucao_select' && callA && (
-                <div className="flex flex-col items-center justify-center min-h-full px-8 py-12 max-w-md mx-auto">
-                    <div className="text-[11px] tracking-widest text-[#C76182] mb-4">你的反应是——</div>
-                    <div className="flex flex-col gap-3 w-full">
-                        {TUCAO_OPTIONS.map(opt => (
-                            <button
-                                key={opt.key}
-                                onClick={() => { setChosenTucao(opt.key); setPhase('tucao_reply'); }}
-                                className="px-5 py-4 rounded-2xl bg-white/85 backdrop-blur border border-[#FCEDD9] text-[#5C3A4A] text-sm leading-relaxed shadow active:scale-95 active:bg-[#FFF1E6] transition-all"
-                            >
-                                「{opt.label}」
-                            </button>
-                        ))}
-                    </div>
-                </div>
-            )}
-
-            {phase === 'tucao_reply' && callA && chosenTucao && (
-                <DialogueLine
-                    text={callA.tucao_responses[chosenTucao]}
-                    onNext={() => setPhase('anchors')}
-                />
-            )}
-
-            {phase === 'anchors' && callA && charChibi && (
-                <YangchengScene
-                    anchors={callA.anchors}
+            {phase === 'yangcheng' && callA && charChibi && (
+                <Y520Scene
+                    callA={callA}
                     charName={char.name}
                     charAvatar={char.avatar}
                     charChibiUrl={charChibi.transparentDataUrl}
-                    onComplete={() => setPhase('reveal_transition')}
-                />
-            )}
-
-            {phase === 'reveal_transition' && callA && (
-                <DialogueLine
-                    text={callA.reveal_transition}
-                    onNext={() => setPhase('user_creator')}
+                    onTucaoSelected={(k) => setChosenTucao(k)}
+                    onComplete={() => setPhase('user_creator')}
                 />
             )}
 
@@ -705,10 +832,14 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
                 </div>
             )}
 
-            {phase === 'uncovered_line' && callA && (
-                <DialogueLine
-                    text={callA.uncovered_line}
-                    onNext={() => setPhase('ending_screen')}
+            {phase === 'uncovered_line' && callA && charChibi && userChibi && (
+                <UncoveredLineView
+                    lines={callA.uncovered_line}
+                    charName={char.name}
+                    charAvatar={char.avatar}
+                    charChibi={charChibi.transparentDataUrl}
+                    userChibi={userChibi.transparentDataUrl}
+                    onComplete={() => setPhase('ending_screen')}
                 />
             )}
 
@@ -728,9 +859,10 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
             {phase === 'loading_b' && <LoadingView hint="醒过来之前…" />}
 
             {phase === 'wake_up' && callB && (
-                <DialogueLine
-                    text={callB.wake_up}
-                    onNext={() => setPhase('letter')}
+                <LineQueueView
+                    lines={callB.wake_up}
+                    charName={char.name}
+                    onComplete={() => setPhase('letter')}
                 />
             )}
 
