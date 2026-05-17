@@ -92,6 +92,8 @@ export interface OSTheme {
   chatHeaderDensity?: 'compact' | 'default' | 'airy';
   chatStatusStyle?: 'subtle' | 'pill' | 'dot';
   chatSendButtonStyle?: 'circle' | 'pill' | 'minimal';
+  /** Instant Push 用户气泡左侧的"准备中"圆点动画。默认开启。 */
+  chatPendingIndicator?: boolean;
 }
 
 export interface AppearancePreset {

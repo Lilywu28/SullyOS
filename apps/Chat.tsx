@@ -2297,7 +2297,6 @@ const Chat: React.FC = () => {
                             className={[
                                 flashMsgId === m.id ? 'ring-2 ring-yellow-300 bg-yellow-50/40 rounded-2xl mx-2' : '',
                                 'transition-all duration-300',
-                                pendingInstantMsgIds.has(m.id) ? 'opacity-50' : 'opacity-100',
                             ].filter(Boolean).join(' ')}
                         >
                         <MessageItem
@@ -2327,6 +2326,8 @@ const Chat: React.FC = () => {
                             bubbleVariant={osTheme.chatBubbleStyle}
                             messageSpacing={osTheme.chatMessageSpacing}
                             showTimestamp={osTheme.chatShowTimestamp}
+                            isPending={pendingInstantMsgIds.has(m.id)}
+                            pendingIndicator={osTheme.chatPendingIndicator !== false}
                             onMcdSendCart={handleMcdSendCart}
                             onMcdCandidate={handleMcdCandidate}
                             thinkingChainOptions={{
