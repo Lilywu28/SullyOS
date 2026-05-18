@@ -304,6 +304,10 @@ const Character: React.FC = () => {
               setIsCompressing(true);
               const processedBase64 = await processImage(file);
               handleChange('avatar', processedBase64);
+              // 清空 URL draft, 否则用户之后再触发 URL input 的 onBlur 会用脏旧 URL
+              // 把刚上传的 data URL 头像盖掉. 不走 effect 监听 avatar 的方案 —— 那会
+              // 在用户正在打 URL 时吃掉 draft.
+              setAvatarUrlDraft('');
               addToast('头像上传成功', 'success');
           } catch (error: any) { 
               addToast(error.message || '图片处理失败', 'error'); 
@@ -1021,7 +1025,16 @@ ${isInitialGeneration ? `
                                        onChange={(e) => setAvatarUrlDraft(e.target.value)}
                                        onBlur={() => {
                                            const v = avatarUrlDraft.trim();
-                                           if (!v) return;  // 空值不动 avatar (保留之前的图)
+                                           // 空 draft 分两种情况:
+                                           //  - 当前 avatar 是 https URL: 用户清空 = 想移除这个 URL, commit '' 让头像清空
+                                           //  - 当前 avatar 是 data URL / emoji / 空: input 本就为空, 不动 (避免误清已上传的图)
+                                           if (!v) {
+                                               if (/^https?:\/\//i.test(formData.avatar || '')) {
+                                                   handleChange('avatar', '');
+                                                   addToast('头像 URL 已移除', 'info');
+                                               }
+                                               return;
+                                           }
                                            try {
                                                const u = new URL(v);
                                                if (!/^https?:$/.test(u.protocol)) throw new Error();
