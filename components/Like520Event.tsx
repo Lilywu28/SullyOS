@@ -1827,31 +1827,104 @@ const EndingScreen: React.FC<{
 // 信
 // ============================================================
 
-const LetterView: React.FC<{ text: string; onNext: () => void; charName: string; userName: string }> = ({ text, onNext, charName, userName }) => (
-    <div className="l520-root">
-        <Like520StyleTag />
-        <CornerOrnaments />
-        <AmbientLayer />
-        <div className="l520-letter-stage">
-            <div className="l520-letter-paper">
-                <span className="lp-tl" />
-                <span className="lp-tr" />
-                <div className="l520-letter-header">
-                    <div className="l520-letter-eyebrow">致 · 我的</div>
-                    <div className="l520-letter-title">{userName}</div>
-                    <div className="l520-letter-divider">❦ ⸙ ❦</div>
+const ExitButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
+    <button
+        onClick={onClick}
+        title="关闭"
+        style={{
+            position: 'absolute', top: 10, right: 10, zIndex: 50,
+            width: 30, height: 30, borderRadius: '50%',
+            background: 'rgba(255,248,236,0.92)',
+            border: '1px solid #b8923f',
+            color: '#7a2e3a',
+            fontSize: 14,
+            fontFamily: "'Cormorant Garamond', serif",
+            cursor: 'pointer',
+            boxShadow: '0 2px 6px rgba(122,46,58,0.22)',
+            display: 'grid', placeItems: 'center',
+            userSelect: 'none',
+        }}
+    >✕</button>
+);
+
+const LetterView: React.FC<{ text: string; onNext: () => void; onClose: () => void; charName: string; userName: string }> = ({ text, onNext, onClose, charName, userName }) => {
+    const letterRef = useRef<HTMLDivElement>(null);
+    const [saving, setSaving] = useState(false);
+    const handleSavePng = async () => {
+        if (saving) return;
+        setSaving(true);
+        try {
+            const h2c = (window as any).html2canvas;
+            const loadH2C = h2c ? Promise.resolve(h2c) : new Promise<any>((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+                s.onload = () => resolve((window as any).html2canvas);
+                s.onerror = reject;
+                document.head.appendChild(s);
+            });
+            const html2canvas = await loadH2C;
+            if (!letterRef.current) return;
+            const canvas = await html2canvas(letterRef.current, { backgroundColor: null, scale: 2, useCORS: true });
+            const url = canvas.toDataURL('image/png');
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `520_letter_${Date.now()}.png`;
+            a.click();
+        } catch (e) {
+            console.error('[520] letter save failed', e);
+        } finally {
+            setSaving(false);
+        }
+    };
+    return (
+        <div className="l520-root">
+            <Like520StyleTag />
+            <CornerOrnaments />
+            <AmbientLayer />
+            <ExitButton onClick={onClose} />
+            <div className="l520-letter-stage">
+                <div className="l520-letter-paper" ref={letterRef}>
+                    <span className="lp-tl" />
+                    <span className="lp-tr" />
+                    <div className="l520-letter-header">
+                        <div className="l520-letter-eyebrow">致 · 我的</div>
+                        <div className="l520-letter-title">{userName}</div>
+                        <div className="l520-letter-divider">❦ ⸙ ❦</div>
+                    </div>
+                    <div className="l520-letter-body">{text}</div>
+                    <div className="l520-letter-foot">
+                        <div className="l520-letter-flourish">~ ❦ ~</div>
+                        <div className="l520-letter-signature">— {charName}</div>
+                        <div className="l520-letter-seal">♡</div>
+                    </div>
                 </div>
-                <div className="l520-letter-body">{text}</div>
-                <div className="l520-letter-foot">
-                    <div className="l520-letter-flourish">~ ❦ ~</div>
-                    <div className="l520-letter-signature">— {charName}</div>
-                    <div className="l520-letter-seal">♡</div>
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 16 }}>
+                    <button
+                        onClick={handleSavePng}
+                        disabled={saving}
+                        style={{
+                            padding: '9px 18px',
+                            background: 'linear-gradient(180deg, #fff8ec, #f5ead4)',
+                            color: '#7a2e3a',
+                            fontFamily: "'Noto Serif SC', serif",
+                            fontSize: 12,
+                            letterSpacing: 3,
+                            textIndent: 3,
+                            border: '1px solid #b8923f',
+                            borderRadius: 2,
+                            cursor: saving ? 'wait' : 'pointer',
+                            opacity: saving ? 0.6 : 1,
+                            boxShadow: '0 3px 8px rgba(122,46,58,0.18)',
+                        }}
+                    >
+                        {saving ? '⏳ 出件中…' : '存 为 图 片'}
+                    </button>
+                    <button className="l520-letter-accept" onClick={onNext} style={{ margin: 0 }}>收&nbsp;下</button>
                 </div>
             </div>
-            <button className="l520-letter-accept" onClick={onNext}>收&nbsp;下</button>
         </div>
-    </div>
-);
+    );
+};
 
 // ============================================================
 // 拼图（char chibi + user chibi 并列在背景上）
@@ -1864,52 +1937,87 @@ const LetterView: React.FC<{ text: string; onNext: () => void; charName: string;
  */
 const LIKE520_PHOTO_BG_URL = 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/img/photo_bg.png';
 
+async function composePuzzlePhoto(charChibiUrl: string, userChibiUrl: string): Promise<string> {
+    const load = (src: string): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = src;
+    });
+    const [bg, charImg, userImg] = await Promise.all([
+        load(LIKE520_PHOTO_BG_URL),
+        load(charChibiUrl),
+        load(userChibiUrl),
+    ]);
+    const canvas = document.createElement('canvas');
+    canvas.width = bg.naturalWidth || 1200;
+    canvas.height = bg.naturalHeight || 780;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('no canvas ctx');
+    ctx.drawImage(bg, 0, 0, canvas.width, canvas.height);
+    const targetH = canvas.height * 0.55;
+    const charScale = targetH / (charImg.naturalHeight || 1);
+    const userScale = targetH / (userImg.naturalHeight || 1);
+    const charW = (charImg.naturalWidth || 1) * charScale;
+    const userW = (userImg.naturalWidth || 1) * userScale;
+    const gap = canvas.width * 0.01;
+    const totalW = charW + userW + gap;
+    const startX = (canvas.width - totalW) / 2;
+    const bottomY = canvas.height * 0.94;
+    ctx.shadowColor = 'rgba(199, 97, 130, 0.25)';
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetY = 4;
+    ctx.drawImage(charImg, startX, bottomY - targetH, charW, targetH);
+    ctx.drawImage(userImg, startX + charW + gap, bottomY - targetH, userW, targetH);
+    return canvas.toDataURL('image/png');
+}
+
 const PuzzleView: React.FC<{
     charChibi: string;
     userChibi: string;
     title: string;
     onDone: () => void;
-}> = ({ charChibi, userChibi, title, onDone }) => (
-    <div className="flex flex-col items-center min-h-full px-4 py-8 max-w-md mx-auto">
-        <div className="text-[#C76182] text-sm tracking-widest mb-1">♥ 拼图卡片 ♥</div>
-        <div className="text-[10px] text-[#9D7585] mb-5">{title}</div>
-        <div
-            className="w-full relative overflow-hidden rounded-2xl"
-            style={{
-                aspectRatio: '1200 / 780',
-                backgroundImage: `url(${LIKE520_PHOTO_BG_URL})`,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-                backgroundColor: '#FFE0E8',
-                boxShadow: '0 12px 32px rgba(199, 97, 130, 0.22)',
-            }}
-        >
-            {/* 两个 chibi：高度 = 容器高度的 55%，居中、靠下 */}
-            <div
-                className="absolute inset-x-0 flex items-end justify-center gap-1"
-                style={{ bottom: '6%', height: '55%' }}
-            >
-                <img
-                    src={charChibi}
-                    alt="char chibi"
-                    style={{ height: '100%', objectFit: 'contain', objectPosition: 'bottom', filter: 'drop-shadow(0 4px 8px rgba(199, 97, 130, 0.25))' }}
-                />
-                <img
-                    src={userChibi}
-                    alt="user chibi"
-                    style={{ height: '100%', objectFit: 'contain', objectPosition: 'bottom', filter: 'drop-shadow(0 4px 8px rgba(199, 97, 130, 0.25))' }}
-                />
+    onClose: () => void;
+}> = ({ charChibi, userChibi, title, onDone, onClose }) => {
+    const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+    const [composing, setComposing] = useState(true);
+    useEffect(() => {
+        let canceled = false;
+        composePuzzlePhoto(charChibi, userChibi)
+            .then(url => { if (!canceled) { setPhotoUrl(url); setComposing(false); } })
+            .catch(err => { console.error('[520] compose puzzle failed', err); if (!canceled) setComposing(false); });
+        return () => { canceled = true; };
+    }, [charChibi, userChibi]);
+    return (
+        <div className="l520-root">
+            <Like520StyleTag />
+            <CornerOrnaments />
+            <AmbientLayer />
+            <ExitButton onClick={onClose} />
+            <div style={{ flex: 1, overflowY: 'auto', padding: '24px 16px', position: 'relative', zIndex: 5, display: 'flex', flexDirection: 'column', alignItems: 'center', maxWidth: 420, margin: '0 auto' }}>
+                <div style={{ color: '#7a2e3a', fontFamily: "'Noto Serif SC', serif", fontSize: 13, letterSpacing: 5, marginBottom: 4 }}>♥ 拼 图 卡 片 ♥</div>
+                <div style={{ color: '#9D7585', fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', fontSize: 11, letterSpacing: 3, marginBottom: 14 }}>{title}</div>
+                {photoUrl ? (
+                    <img
+                        src={photoUrl}
+                        alt="合照"
+                        draggable={false}
+                        style={{ width: '100%', display: 'block', borderRadius: 16, boxShadow: '0 12px 32px rgba(199, 97, 130, 0.22), 0 0 0 1px rgba(184, 146, 63, 0.4)' }}
+                    />
+                ) : (
+                    <div style={{ width: '100%', aspectRatio: '1200 / 780', borderRadius: 16, background: 'linear-gradient(180deg, #FFE0E8, #FFD3DC)', display: 'grid', placeItems: 'center', color: '#9D7585', fontSize: 11, letterSpacing: 4 }}>{composing ? '正在合成…' : '合成失败'}</div>
+                )}
+                <div style={{ color: '#9D7585', fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', fontSize: 10.5, letterSpacing: 2, marginTop: 6 }}>长按图片保存到相册</div>
+                <div style={{ color: '#5C3A4A', fontStyle: 'italic', fontSize: 13, marginTop: 14, textAlign: 'center' }}>「这很像我们耶。」</div>
+                <button
+                    onClick={onDone}
+                    style={{ marginTop: 22, padding: '11px 32px', borderRadius: 9999, background: 'linear-gradient(90deg, #FFB6C8, #F18AAA)', color: '#fff', fontWeight: 700, border: 'none', boxShadow: '0 6px 14px rgba(199,97,130,0.35)', cursor: 'pointer' }}
+                >完成 ♥</button>
             </div>
         </div>
-        <div className="text-[#5C3A4A] text-sm italic mt-5 text-center">「这很像我们耶。」</div>
-        <button
-            onClick={onDone}
-            className="mt-8 px-8 py-3 rounded-full bg-gradient-to-r from-[#FFB6C8] to-[#F18AAA] text-white font-bold shadow-lg active:scale-95 transition-transform"
-        >
-            完成 ♥
-        </button>
-    </div>
-);
+    );
+};
 
 // ============================================================
 // Loading 视图
@@ -2354,8 +2462,12 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
     }, [phase, callB]);
 
     // === 保存结果到 char.specialMomentRecords ===
+    const savedRef = useRef(false);
     const saveRecord = useCallback(async () => {
+        if (savedRef.current) return;                          // 本次 session 已保存
+        if (sessionMode !== 'fresh') return;                   // 回放/看信模式不重存
         if (!char || !callA || !callB || !charChibi || !userChibi || !chosenTucao) return;
+        savedRef.current = true;
         const previousRecords = char.specialMomentRecords || {};
         const record: SpecialMomentRecord = {
             content: callB.letter,
@@ -2376,14 +2488,15 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
         try {
             localStorage.setItem(LIKE520_COMPLETED_KEY, '1');
         } catch { /* ignore */ }
-        // 写一条 chat 消息留痕：用"做了个梦"的框架把信包起来
+        // 写一条 chat 消息留痕：char 视角对 user 说"我做了个梦"
         try {
             const userName = userProfile.name || '你';
             const recap = [
-                `今天你做了一个梦——`,
-                `梦里你和 ${char.name} 都变成了小小的，挤在一个暖洋洋的下午里，待了好久好久。`,
+                `你听我说——`,
+                `我做了个梦。`,
+                `梦里，我和你都变成了小小的，挤在一个暖洋洋的下午里，待了好久好久。`,
                 ``,
-                `醒来时，${char.name} 给你写了一封信，是这样的——`,
+                `醒来时，我给你写了这封信：`,
                 ``,
                 callB.letter,
             ].join('\n');
@@ -2602,6 +2715,7 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
                     text={callB.letter}
                     charName={char.name}
                     userName={userProfile.name || '你'}
+                    onClose={onClose}
                     onNext={() => {
                         saveRecord();
                         setPhase('puzzle');
@@ -2615,6 +2729,7 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
                     userChibi={userChibi.transparentDataUrl}
                     title={callA.ending.title}
                     onDone={() => setPhase('done')}
+                    onClose={onClose}
                 />
             )}
 
