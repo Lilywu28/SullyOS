@@ -320,6 +320,159 @@ const ForwardCard: React.FC<{
     );
 };
 
+// ============================================================
+// Like520 卡片：520 限定典藏，展开后看完整合照 + 信
+// ============================================================
+
+const Like520ChatCard: React.FC<{ data: any }> = ({ data }) => {
+    const [open, setOpen] = useState(false);
+    const stop = (e: React.MouseEvent | React.TouchEvent) => e.stopPropagation();
+
+    return (
+        <>
+            <div
+                onClick={() => setOpen(true)}
+                style={{
+                    width: 268,
+                    borderRadius: 4,
+                    overflow: 'hidden',
+                    background: 'linear-gradient(180deg, #fffaef, #f5ead4)',
+                    border: '1px solid #b8923f',
+                    boxShadow: '0 6px 16px rgba(122,46,58,0.18), 0 0 0 4px #faf3e7, 0 0 0 5px rgba(212,177,106,0.45)',
+                    cursor: 'pointer',
+                    position: 'relative',
+                }}
+            >
+                <div style={{
+                    padding: '10px 14px',
+                    background: 'linear-gradient(135deg, rgba(212,177,106,0.3), rgba(184,146,63,0.12))',
+                    borderBottom: '1px solid rgba(184,146,63,0.35)',
+                    display: 'flex', alignItems: 'center', gap: 8,
+                }}>
+                    <div style={{
+                        width: 26, height: 26, borderRadius: 4, flexShrink: 0,
+                        background: 'linear-gradient(135deg, #f4e0a8, #d4b16a, #8b6914)',
+                        color: '#fff8ec',
+                        display: 'grid', placeItems: 'center',
+                        fontFamily: 'Cinzel, serif', fontSize: 9, fontWeight: 600,
+                        letterSpacing: -0.5,
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.4), 0 1px 2px rgba(139,105,20,0.3)',
+                    }}>520</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 8.5, letterSpacing: 4, color: '#8b6914', fontFamily: 'Cinzel, serif', fontWeight: 600 }}>TRÉSOR · 520</div>
+                        <div style={{ fontSize: 12, color: '#7a2e3a', fontFamily: '"Noto Serif SC", serif', fontWeight: 500, letterSpacing: 1, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{data.title || '我们的下午'}</div>
+                    </div>
+                </div>
+                {data.photoDataUrl ? (
+                    <img src={data.photoDataUrl} alt="合照" style={{ width: '100%', display: 'block', borderBottom: '1px solid rgba(184,146,63,0.25)' }} />
+                ) : null}
+                <div style={{
+                    padding: '8px 14px 10px',
+                    color: '#5C3A4A',
+                    fontSize: 11,
+                    fontStyle: 'italic',
+                    fontFamily: '"Cormorant Garamond", "Noto Serif SC", serif',
+                    lineHeight: 1.7,
+                    letterSpacing: 0.5,
+                }}>
+                    «{(data.letter || '').slice(0, 36)}…»
+                </div>
+                <div style={{
+                    padding: '6px 14px 8px',
+                    borderTop: '0.5px dashed rgba(184,146,63,0.4)',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    fontFamily: '"Cormorant Garamond", serif', fontStyle: 'italic',
+                    fontSize: 10, color: '#8b6914', letterSpacing: 1.5,
+                }}>
+                    <span>— {data.charName}</span>
+                    <span style={{ color: '#b8923f' }}>展开 →</span>
+                </div>
+            </div>
+
+            {open && (
+                <div
+                    onClick={() => setOpen(false)}
+                    style={{
+                        position: 'fixed', inset: 0, zIndex: 9999,
+                        background: 'rgba(74,36,24,0.55)',
+                        backdropFilter: 'blur(8px)',
+                        overflowY: 'auto', padding: 16,
+                        animation: 'l520-card-mask-in .25s ease',
+                    }}
+                >
+                    <style>{`
+                        @keyframes l520-card-mask-in { from { opacity: 0; } to { opacity: 1; } }
+                        @keyframes l520-card-pop-in { from { opacity: 0; transform: scale(0.94) translateY(20px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+                    `}</style>
+                    <div
+                        onClick={stop}
+                        style={{
+                            maxWidth: 420, margin: '24px auto',
+                            background: 'linear-gradient(180deg, #fffcf3, #f9efd9)',
+                            borderRadius: 4,
+                            position: 'relative',
+                            padding: '22px 18px 26px',
+                            boxShadow: '0 0 0 1px #b8923f, 0 0 0 4px #faf3e7, 0 0 0 5px #d4b16a, 0 20px 60px rgba(74,36,24,0.5)',
+                            animation: 'l520-card-pop-in .35s cubic-bezier(.4,1.4,.5,1)',
+                        }}
+                    >
+                        <button
+                            onClick={() => setOpen(false)}
+                            title="关闭"
+                            style={{
+                                position: 'absolute', top: 10, right: 10, zIndex: 5,
+                                width: 30, height: 30, borderRadius: '50%',
+                                background: 'rgba(255,248,236,0.95)',
+                                border: '1px solid #b8923f',
+                                color: '#7a2e3a',
+                                fontSize: 14,
+                                fontFamily: '"Cormorant Garamond", serif',
+                                cursor: 'pointer',
+                                display: 'grid', placeItems: 'center',
+                            }}
+                        >✕</button>
+
+                        <div style={{ textAlign: 'center', marginBottom: 12 }}>
+                            <div style={{ fontSize: 9, letterSpacing: 6, color: '#8b6914', fontFamily: 'Cinzel, serif', fontWeight: 600 }}>5 · 2 · 0 · TRÉSOR</div>
+                            <div style={{ fontSize: 13, color: '#7a2e3a', fontFamily: '"Noto Serif SC", serif', fontWeight: 500, letterSpacing: 4, marginTop: 4 }}>{data.title || '我们的下午'}</div>
+                        </div>
+
+                        {data.photoDataUrl ? (
+                            <>
+                                <img src={data.photoDataUrl} alt="合照" draggable={false} style={{ width: '100%', display: 'block', borderRadius: 8, boxShadow: '0 8px 20px rgba(122,46,58,0.2), 0 0 0 1px rgba(184,146,63,0.4)' }} />
+                                <div style={{ fontSize: 10, fontStyle: 'italic', color: '#9D7585', textAlign: 'center', marginTop: 4, fontFamily: '"Cormorant Garamond", serif', letterSpacing: 2 }}>长按图片保存到相册</div>
+                            </>
+                        ) : null}
+
+                        <div style={{
+                            marginTop: 18,
+                            padding: '22px 18px',
+                            background: 'linear-gradient(180deg, #fffcf3, #f9efd9)',
+                            border: '1px solid #d4b16a',
+                            backgroundImage: 'repeating-linear-gradient(transparent, transparent 28px, rgba(184,146,63,0.05) 28px, rgba(184,146,63,0.05) 29px)',
+                            borderRadius: 2,
+                            position: 'relative',
+                        }}>
+                            <div style={{ textAlign: 'center', marginBottom: 14 }}>
+                                <div style={{ fontFamily: '"Cormorant Garamond", serif', fontStyle: 'italic', fontSize: 11, color: '#8b6914', letterSpacing: 3 }}>致 · 我的</div>
+                                <div style={{ fontFamily: '"Noto Serif SC", serif', fontSize: 20, color: '#7a2e3a', letterSpacing: 6, marginTop: 4 }}>{data.userName}</div>
+                                <div style={{ color: '#b8923f', fontSize: 11, letterSpacing: 8, marginTop: 6 }}>❦ ⸙ ❦</div>
+                            </div>
+                            <div style={{ fontFamily: '"Noto Serif SC", serif', fontSize: 13.5, lineHeight: 2.05, color: '#3a2418', textIndent: '2em', whiteSpace: 'pre-wrap', letterSpacing: 0.5 }}>
+                                {data.letter}
+                            </div>
+                            <div style={{ textAlign: 'right', marginTop: 16, paddingTop: 8, borderTop: '0.5px dashed rgba(184,146,63,0.3)' }}>
+                                <div style={{ color: '#b8923f', fontSize: 11, letterSpacing: 6, marginBottom: 4 }}>~ ❦ ~</div>
+                                <div style={{ fontFamily: '"Noto Serif SC", serif', fontSize: 13, color: '#7a2e3a', letterSpacing: 3 }}>— {data.charName}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </>
+    );
+};
+
 const LifeSimResetCardView: React.FC<{ card: any }> = ({ card }) => {
     const parsed = tryParseLifeSimResetCard(card);
     if (!parsed) return null;
@@ -1375,6 +1528,11 @@ const MessageItem = React.memo(({
                     </div>
                 </div>
             );
+        }
+
+        // === Like 520 Card ===
+        if (scoreData?.type === 'like520_card') {
+            return commonLayout(<Like520ChatCard data={scoreData} />);
         }
     }
 

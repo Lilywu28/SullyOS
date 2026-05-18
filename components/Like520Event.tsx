@@ -1935,7 +1935,7 @@ const LetterView: React.FC<{ text: string; onNext: () => void; onClose: () => vo
  * 1200×780 左右的横版 520 DAY 装饰框（蕾丝 doily + 爱心/星星/小花），
  * 中间是空白的圆形 doily，让两个 chibi 居中靠下排进去。
  */
-const LIKE520_PHOTO_BG_URL = 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/img/photo_bg.png';
+const LIKE520_PHOTO_BG_URL = 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/img/2.png';
 
 async function composePuzzlePhoto(charChibiUrl: string, userChibiUrl: string): Promise<string> {
     const load = (src: string): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
@@ -2488,33 +2488,38 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
         try {
             localStorage.setItem(LIKE520_COMPLETED_KEY, '1');
         } catch { /* ignore */ }
-        // 写一条 chat 消息留痕：char 视角对 user 说"我做了个梦"
+        // 写一条 chat 卡片消息留痕：score_card kind=like520_card，含合照 PNG + 信全文 + 标题
         try {
             const userName = userProfile.name || '你';
-            const recap = [
-                `你听我说——`,
-                `我做了个梦。`,
-                `梦里，我和你都变成了小小的，挤在一个暖洋洋的下午里，待了好久好久。`,
-                ``,
-                `醒来时，我给你写了这封信：`,
-                ``,
-                callB.letter,
-            ].join('\n');
+            const photoDataUrl = await composePuzzlePhoto(
+                charChibi.transparentDataUrl,
+                userChibi.transparentDataUrl,
+            );
+            const cardData = {
+                type: 'like520_card',
+                charName: char.name,
+                charAvatar: char.avatar || '',
+                userName,
+                title: callA.ending.title,
+                description: callA.ending.description,
+                photoDataUrl,
+                letter: callB.letter,
+                timestamp: Date.now(),
+            };
             await DB.saveMessage({
                 charId: char.id,
                 role: 'assistant',
-                type: 'text',
-                content: recap,
+                type: 'score_card',
+                content: JSON.stringify(cardData),
                 timestamp: Date.now(),
                 metadata: {
                     source: 'like520_event',
                     like520Event: true,
-                    like520Title: callA.ending.title,
-                    like520UserName: userName,
+                    scoreCard: cardData,
                 },
             });
         } catch (e) {
-            console.warn('[520] save chat message failed', e);
+            console.warn('[520] save chat card failed', e);
         }
     }, [char, callA, callB, charChibi, userChibi, chosenTucao, updateCharacter]);
 
