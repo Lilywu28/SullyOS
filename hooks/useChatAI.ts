@@ -28,6 +28,7 @@ import {
 } from '../utils/instantPushClient';
 import { applyAssistantPostProcessing, type XhsCaches } from '../utils/applyAssistantPostProcessing';
 import { ActiveMsgStore } from '../utils/activeMsgStore';
+import { applyEmotionEvalRaw } from '../utils/emotionApply';
 
 // ─── 情绪评估（副API，fire & forget）───
 
@@ -288,104 +289,7 @@ export async function evaluateEmotionBackground(
         });
 
         const raw = data.choices?.[0]?.message?.content || '';
-        // Extract JSON (may be wrapped in ```json blocks)
-        const jsonMatch = raw.match(/```json\s*([\s\S]*?)```/) || raw.match(/(\{[\s\S]*\})/);
-        if (!jsonMatch) {
-            console.warn('🎭 [Emotion] Could not parse JSON from response:', raw.slice(0, 200));
-            return null;
-        }
-
-        // Repair: escape literal newlines/tabs inside JSON string values
-        const repairJson = (s: string): string => {
-            let inStr = false, esc = false, out = '';
-            for (let i = 0; i < s.length; i++) {
-                const ch = s[i];
-                if (esc) { out += ch; esc = false; continue; }
-                if (ch === '\\') { out += ch; esc = true; continue; }
-                if (ch === '"') { inStr = !inStr; out += ch; continue; }
-                if (inStr && ch === '\n') { out += '\\n'; continue; }
-                if (inStr && ch === '\r') { out += '\\r'; continue; }
-                if (inStr && ch === '\t') { out += '\\t'; continue; }
-                out += ch;
-            }
-            return out;
-        };
-
-        let jsonStr = jsonMatch[1].trim();
-        let result: { changed: boolean; buffs?: CharacterBuff[]; injection?: string; innerState?: string; };
-        try {
-            result = JSON.parse(jsonStr);
-        } catch {
-            try {
-                result = JSON.parse(repairJson(jsonStr));
-            } catch (e2: any) {
-                console.warn('🎭 [Emotion] JSON parse failed even after repair:', e2.message, jsonStr.slice(0, 300));
-                return null;
-            }
-        }
-
-        const _result = result as {
-            changed: boolean;
-            buffs?: CharacterBuff[];
-            injection?: string;
-            innerState?: string;
-        };
-
-        const innerStateOut = (typeof _result.innerState === 'string' && _result.innerState.trim())
-            ? _result.innerState.trim()
-            : null;
-
-        const sanitizeBuffs = (buffs?: CharacterBuff[]): CharacterBuff[] => {
-            if (!Array.isArray(buffs)) return [];
-            return buffs
-                .map((buff, index) => {
-                    const label = typeof buff?.label === 'string' ? buff.label.trim() : '';
-                    const name = typeof buff?.name === 'string' ? buff.name.trim() : '';
-                    if (!label || !name) return null;
-
-                    const rawIntensity = Number((buff as any)?.intensity);
-                    const intensity: 1 | 2 | 3 = !Number.isFinite(rawIntensity)
-                        ? 2
-                        : rawIntensity <= 1
-                            ? 1
-                            : rawIntensity >= 3
-                                ? 3
-                                : 2;
-
-                    return {
-                        id: typeof buff?.id === 'string' && buff.id.trim() ? buff.id.trim() : `buff_${Date.now()}_${index}`,
-                        name,
-                        label,
-                        intensity,
-                        emoji: typeof buff?.emoji === 'string' ? buff.emoji : undefined,
-                        color: typeof buff?.color === 'string' ? buff.color : undefined,
-                        description: typeof buff?.description === 'string' ? buff.description : undefined
-                    };
-                })
-                .filter((buff): buff is CharacterBuff => !!buff);
-        };
-
-        if (!_result.changed) {
-            console.log('🎭 [Emotion] No change detected, skipping buff update');
-            if (innerStateOut) console.log(`🌊 [InnerState] ${charData.name}: ${innerStateOut}`);
-            return innerStateOut;
-        }
-
-        const sanitizedBuffs = sanitizeBuffs(_result.buffs);
-
-        const updated: CharacterProfile = {
-            ...charData,
-            activeBuffs: sanitizedBuffs,
-            buffInjection: _result.injection || ''
-        };
-        await DB.saveCharacter(updated);
-
-        window.dispatchEvent(new CustomEvent('emotion-updated', {
-            detail: { charId: charData.id, buffs: sanitizedBuffs }
-        }));
-        console.log('🎭 [Emotion] Updated buffs:', sanitizedBuffs.map((b: CharacterBuff) => b.label).join(', ') || 'none');
-        if (innerStateOut) console.log(`🌊 [InnerState] ${charData.name}: ${innerStateOut}`);
-        return innerStateOut;
+        return await applyEmotionEvalRaw(raw, charData);
     } catch (e: any) {
         console.warn('🎭 [Emotion] Evaluation failed:', e.message);
         return null;
