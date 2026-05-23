@@ -2440,6 +2440,8 @@ async function runEmotionEval(body, env) {
   if (!sub || typeof sub.endpoint !== "string") return;
   if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return;
   const charId = body?.metadata && typeof body.metadata === "object" ? body.metadata.charId : "";
+  const priorMessages = Array.isArray(body?.messages) ? body.messages : [];
+  const evalMessages = priorMessages.length > 0 ? [...priorMessages, { role: "user", content: String(ee.prompt) }] : [{ role: "user", content: String(ee.prompt) }];
   try {
     const baseUrl = String(ee.api.baseUrl).replace(/\/+$/, "");
     const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -2450,7 +2452,7 @@ async function runEmotionEval(body, env) {
       },
       body: JSON.stringify({
         model: ee.api.model,
-        messages: [{ role: "user", content: String(ee.prompt) }],
+        messages: evalMessages,
         temperature: 0.85,
         stream: false
       })

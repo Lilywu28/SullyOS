@@ -36,7 +36,8 @@ function buildEmotionEvalPrompt(
     char: CharacterProfile,
     userProfile: UserProfile,
     mainSystemPrompt: string,
-    apiMessages: Array<{ role: string; content: any }>
+    apiMessages: Array<{ role: string; content: any }>,
+    includeContext: boolean = true
 ): string {
     // 直接复用主 API 的完整 system prompt 和消息历史，确保 100% 信息对齐
     // （包含：角色设定、印象档案、世界书、记忆宫殿、实时信息、日程内心旁白、群聊、日记标题等）
@@ -63,13 +64,24 @@ function buildEmotionEvalPrompt(
         ? JSON.stringify(currentBuffs, null, 2)
         : '（当前无buff，情绪平稳）';
 
-    return `你是一个角色情绪分析系统。请分析角色「${char.name}」当前的情绪底色状态。
+    // instant 模式 (includeContext=false): system prompt + 对话历史不在 prompt 里重复嵌入,
+    // 改由 worker 把本次请求已有的 messages 作为前文接上 —— 否则上下文发两遍, 请求体翻倍撑过
+    // keepalive 64KB 上限, 浏览器降级成非 keepalive, 用户一关前端飞行中的 fetch 就被取消,
+    // 主回复扣了费却没推送/没情绪. 本地模式 (includeContext=true) 自带完整上下文, 不受影响.
+    const contextSection = includeContext
+        ? `
 
 ## 角色此刻看到的完整上下文（与主 API 发送的 system prompt 完全一致）
 ${mainSystemPrompt}
 
 ## 完整对话历史（与主 API 看到的消息历史完全一致）
-${recentLines}
+${recentLines}`
+        : `
+
+## 上下文说明
+角色此刻看到的完整 system prompt 与对话历史，已作为本次请求的前文消息提供，请直接基于前文消息进行分析。`;
+
+    return `你是一个角色情绪分析系统。请分析角色「${char.name}」当前的情绪底色状态。${contextSection}
 
 ## 当前Buff状态（结构化数据，便于你维护演化）
 ${buffStr}
@@ -674,7 +686,9 @@ export const useChatAI = ({
             }
             const instantEmotionEval = (emotionEvalEnabled && instantOn && emotionApi)
                 ? {
-                    prompt: buildEmotionEvalPrompt(char, userProfile, systemPrompt, cleanedApiMessages),
+                    // includeContext=false: 不嵌 system prompt + 对话历史 (worker 复用本次请求的 messages 作前文),
+                    // 把 emotionEval 块压到最小, 让请求体留在 keepalive 64KB 上限内 (关前端也能跑完).
+                    prompt: buildEmotionEvalPrompt(char, userProfile, systemPrompt, cleanedApiMessages, false),
                     api: { baseUrl: emotionApi.baseUrl, apiKey: emotionApi.apiKey, model: emotionApi.model },
                 }
                 : undefined;

@@ -97,6 +97,14 @@ async function runEmotionEval(body: any, env: Env): Promise<void> {
   if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return;
 
   const charId = (body?.metadata && typeof body.metadata === 'object') ? body.metadata.charId : '';
+  // 复用主回复请求里已有的 messages (system prompt + 对话历史) 作为情绪评估的前文, 再把
+  // emotionEval.prompt (只含情绪任务 + buff 状态, 不含上下文) 作为末尾 user 消息接上. 这样客户端
+  // 不必把上下文塞进请求 (省掉一份重复), 请求体不会撑过 keepalive 64KB 上限. 没带 messages 时
+  // (旧客户端/测试) 退回只发 prompt.
+  const priorMessages = Array.isArray(body?.messages) ? body.messages : [];
+  const evalMessages = priorMessages.length > 0
+    ? [...priorMessages, { role: 'user', content: String(ee.prompt) }]
+    : [{ role: 'user', content: String(ee.prompt) }];
   try {
     const baseUrl = String(ee.api.baseUrl).replace(/\/+$/, '');
     const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -107,7 +115,7 @@ async function runEmotionEval(body: any, env: Env): Promise<void> {
       },
       body: JSON.stringify({
         model: ee.api.model,
-        messages: [{ role: 'user', content: String(ee.prompt) }],
+        messages: evalMessages,
         temperature: 0.85,
         stream: false,
       }),
