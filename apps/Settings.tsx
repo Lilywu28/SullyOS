@@ -126,7 +126,7 @@ const Settings: React.FC = () => {
   const [rtFeishuTableId, setRtFeishuTableId] = useState(realtimeConfig.feishuTableId);
   const [rtXhsEnabled, setRtXhsEnabled] = useState(realtimeConfig.xhsEnabled);
   const [rtXhsMcpEnabled, setRtXhsMcpEnabled] = useState(realtimeConfig.xhsMcpConfig?.enabled || false);
-  const [rtXhsMcpUrl, setRtXhsMcpUrl] = useState(realtimeConfig.xhsMcpConfig?.serverUrl || 'http://localhost:18060/mcp');
+  const [rtXhsMcpUrl, setRtXhsMcpUrl] = useState(realtimeConfig.xhsMcpConfig?.serverUrl || 'https://sullymeow.ccwu.cc/api');
   const [rtXhsNickname, setRtXhsNickname] = useState(realtimeConfig.xhsMcpConfig?.loggedInNickname || '');
   const [rtXhsUserId, setRtXhsUserId] = useState(realtimeConfig.xhsMcpConfig?.loggedInUserId || '');
   const [rtXhsCookie, setRtXhsCookie] = useState(realtimeConfig.xhsMcpConfig?.cookie || '');
@@ -2076,7 +2076,7 @@ const Settings: React.FC = () => {
                       <div className="space-y-2">
                           <div>
                               <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">服务器 URL</label>
-                              <input value={rtXhsMcpUrl} onChange={e => setRtXhsMcpUrl(e.target.value)} className="w-full bg-white/80 border border-red-200 rounded-xl px-3 py-2 text-[11px] font-mono" placeholder="https://xhs-lite.<账号>.workers.dev/api" />
+                              <input value={rtXhsMcpUrl} onChange={e => setRtXhsMcpUrl(e.target.value)} className="w-full bg-white/80 border border-red-200 rounded-xl px-3 py-2 text-[11px] font-mono" placeholder="https://sullymeow.ccwu.cc/api" />
                           </div>
                           <div>
                               <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">小红书 Cookie <span className="text-red-400 normal-case">（Lite 模式必填）</span></label>
@@ -2094,9 +2094,9 @@ const Settings: React.FC = () => {
                               </div>
                           </div>
                           <p className="text-[10px] text-red-500/70 leading-relaxed">
-                              <b>⭐ Lite 模式（推荐，零本地依赖）:</b> 部署 worker/xhs-lite 到 Cloudflare<br/>
-                              URL 填: https://xhs-lite.&lt;账号&gt;.workers.dev/api<br/>
-                              再粘贴上面的小红书 cookie 即可，无需 Chrome/隧道/Python<br/>
+                              <b>⭐ Lite 模式（推荐，零本地依赖）:</b> URL 已默认好，<b>只需粘贴上面的 cookie</b><br/>
+                              浏览器登录小红书 → F12 → Application → Cookies → 复制完整 cookie（含 a1、web_session）<br/>
+                              无需 Chrome/隧道/Python/扫码，云端 Worker 直接签名<br/>
                               <br/>
                               <b>MCP 模式:</b> 下载 xiaohongshu-mcp + 运行脚本，URL 填 http://localhost:18060/mcp<br/>
                               <b>Skills 模式:</b> URL 填 http://localhost:18061/api（需 Python + xhs-bridge.mjs）<br/>

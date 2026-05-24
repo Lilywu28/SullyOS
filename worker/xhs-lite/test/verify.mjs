@@ -1,15 +1,15 @@
 /**
- * Verifies src/sign.js produces byte-identical output to the Python xhshow
- * reference (test/vectors.json), using the same deterministic RNG (every draw
- * returns its minimum, matching oracle.py's patched random.randint).
+ * Verifies the XHS signing EMBEDDED in worker/index.js (the deployed worker,
+ * https://sullymeow.ccwu.cc) is byte-identical to the Python xhshow reference
+ * (test/vectors.json), using the same deterministic RNG.
  *
  *   PYTHONPATH=/tmp/xhshow/src python3 oracle.py > vectors.json
  *   node verify.mjs
  */
 import { readFileSync } from 'fs';
-import {
-  RNG, signXs, signXsCommon, generateB1, _internals,
-} from '../src/sign.js';
+import { __xhsLiteTest } from '../../index.js';
+
+const { RNG, signXs, signXsCommon, generateB1, _internals } = __xhsLiteTest;
 
 // deterministic: mirror oracle.py (random.randint(a,b) -> a)
 RNG.randint = (a) => a;
@@ -46,12 +46,7 @@ for (const { name, value } of vectors) {
   if (mine === undefined) { console.log(`?? ${name}: no JS counterpart`); continue; }
   const ok = String(mine) === String(value);
   if (ok) { pass++; console.log(`OK  ${name}`); }
-  else {
-    fail++;
-    console.log(`XX  ${name}`);
-    console.log(`    py: ${value}`);
-    console.log(`    js: ${mine}`);
-  }
+  else { fail++; console.log(`XX  ${name}`); console.log(`    py: ${value}`); console.log(`    js: ${mine}`); }
 }
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
