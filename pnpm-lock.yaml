@@ -48,8 +48,8 @@ importers:
         specifier: 2.3.0-next.2
         version: 2.3.0-next.2
       '@rei-standard/amsg-instant':
-        specifier: 0.8.0-next.7
-        version: 0.8.0-next.7
+        specifier: 0.8.0-next.8
+        version: 0.8.0-next.8
       '@rei-standard/amsg-server':
         specifier: 2.4.0-next.2
         version: 2.4.0-next.2(@neondatabase/serverless@1.1.0)(pg@8.21.0)
@@ -523,8 +523,8 @@ packages:
     resolution: {integrity: sha512-Aw1hAd7o6fpIyXcuBnORQr1pox9MemafU4YyLKZg4ZlG5zuSwGRyGnrnfTDXm4vNvNlTJaiATH/YgsA4ph5Kow==}
     engines: {node: '>=20'}
 
-  '@rei-standard/amsg-instant@0.8.0-next.7':
-    resolution: {integrity: sha512-GKzV37k+Y7IULVRVAwrvg+WNhlgQjO2h5/S441wZxcWvvKWjxgmOXN0alD6+uiWI3Ofiw0JOPyU9s56qI/S5RQ==}
+  '@rei-standard/amsg-instant@0.8.0-next.8':
+    resolution: {integrity: sha512-Z3eVztg4ODL19c4ia+0oemL+2N08EPgbi0raFqU91BCU74JAD5yBUsgAdhUtQ3MvRWILBHpBEra6LT6wOOfz3Q==}
     engines: {node: '>=18'}
 
   '@rei-standard/amsg-server@2.4.0-next.2':
@@ -2044,7 +2044,7 @@ snapshots:
     dependencies:
       '@rei-standard/amsg-shared': 0.1.0-next.4
 
-  '@rei-standard/amsg-instant@0.8.0-next.7':
+  '@rei-standard/amsg-instant@0.8.0-next.8':
     dependencies:
       '@rei-standard/amsg-shared': 0.1.0-next.4
 
