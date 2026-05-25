@@ -101,17 +101,23 @@ function parseBooleanFlag(value: string | undefined): boolean | null {
   return null;
 }
 
+function parseOversizeTransportMode(raw: string): OversizeTransportMode | null {
+  const norm = raw.trim().toLowerCase();
+  if (norm === 'multipart') return 'multipart';
+  if (norm === 'd1' || norm === 'blob' || norm === 'blobstore') return 'd1';
+  if (norm === 'auto') return 'auto';
+  return null;
+}
+
 function resolveOversizeTransport(env: Env): OversizeTransportMode {
-  const raw = (env.AMSG_OVERSIZE_TRANSPORT || '').trim().toLowerCase();
-  if (raw === 'multipart') return 'multipart';
-  if (raw === 'd1' || raw === 'blob' || raw === 'blobstore') return 'd1';
-  if (raw === 'auto') return 'auto';
+  const mode = parseOversizeTransportMode(env.AMSG_OVERSIZE_TRANSPORT || '');
+  if (mode) return mode;
 
   const d1Flag = parseBooleanFlag(env.AMSG_ENABLE_D1_BLOBSTORE);
   if (d1Flag === true) return 'd1';
   if (d1Flag === false) return 'multipart';
 
-  if (raw) {
+  if ((env.AMSG_OVERSIZE_TRANSPORT || '').trim()) {
     console.warn(`[instant-push] Unknown AMSG_OVERSIZE_TRANSPORT="${env.AMSG_OVERSIZE_TRANSPORT}", using multipart.`);
   }
   return 'multipart';
@@ -123,11 +129,7 @@ function shouldUseD1BlobStore(env: Env): boolean {
 }
 
 function resolveRequestOversizeTransport(body: any): OversizeTransportMode | null {
-  const raw = String(body?.oversizeTransport || body?.amsgOversizeTransport || '').trim().toLowerCase();
-  if (raw === 'multipart') return 'multipart';
-  if (raw === 'd1' || raw === 'blob' || raw === 'blobstore') return 'd1';
-  if (raw === 'auto') return 'auto';
-  return null;
+  return parseOversizeTransportMode(String(body?.oversizeTransport || body?.amsgOversizeTransport || ''));
 }
 
 function withRequestOversizeTransport(env: Env, body: any): Env {
@@ -284,24 +286,29 @@ async function handleCapabilitiesRequest(request: Request, env: Env): Promise<Re
   });
 }
 
-const cfWorker = createCloudflareWorker((env: Env) => {
+function buildAmsgOptions(env: Env) {
   return {
     vapid: {
       email: env.VAPID_EMAIL || 'mailto:noreply@example.com',
       publicKey: env.VAPID_PUBLIC_KEY,
       privateKey: env.VAPID_PRIVATE_KEY,
     },
-    clientToken: env.AMSG_CLIENT_TOKEN,
     blobStore: createBlobStore(env),
     multipart: MULTIPART_TRANSPORT,
-    maxLoopIterations: 10,
-    onLLMOutput,
     onEvent: (e: { type: string; [k: string]: unknown }) => {
-      // CF Workers logging — only log error-class events to reduce normal-path stdout noise
       if (ERROR_EVENT_TYPES.has(e.type)) {
         console.error('[instant-push]', e);
       }
     },
+  };
+}
+
+const cfWorker = createCloudflareWorker((env: Env) => {
+  return {
+    ...buildAmsgOptions(env),
+    clientToken: env.AMSG_CLIENT_TOKEN,
+    maxLoopIterations: 10,
+    onLLMOutput,
   };
 });
 
@@ -396,23 +403,10 @@ async function runEmotionEval(body: any, env: Env, requestUrl?: string): Promise
       metadata: { charId, emotionRaw: raw },
     };
 
-    // Resolve D1 env after LLM call to avoid blocking LLM start with schema init.
-    const pushEnv = await prepareBlobStoreEnv(env);
     // Reuse amsg's oversize transport so large emotionRaw payloads do not exceed Web Push limits.
     await sendPushWithMaybeBlob(pushObj, { pushSubscription: sub }, {
-      vapid: {
-        email: pushEnv.VAPID_EMAIL || 'mailto:noreply@example.com',
-        publicKey: pushEnv.VAPID_PUBLIC_KEY,
-        privateKey: pushEnv.VAPID_PRIVATE_KEY,
-      },
-      blobStore: createBlobStore(pushEnv),
-      multipart: MULTIPART_TRANSPORT,
+      ...buildAmsgOptions(env),
       requestUrl,
-      onEvent: (e: { type: string; [k: string]: unknown }) => {
-        if (ERROR_EVENT_TYPES.has(e.type)) {
-          console.error('[emotion-eval] push delivery event', e);
-        }
-      },
     } as any, body?.sessionId || '');
     console.log('[TIMING] emotion: push sent', new Date().toISOString());
   } catch (e) {

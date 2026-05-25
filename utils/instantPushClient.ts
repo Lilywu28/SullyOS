@@ -371,6 +371,13 @@ export function getInstantOversizeTransport(cfg?: InstantPushConfig): InstantOve
   return c.useD1BlobStore ? 'd1' : 'multipart';
 }
 
+async function resolveSafeFetchText(res: Response): Promise<{ text: string; parsed: any }> {
+  const text = await res.text().catch(() => '');
+  let parsed: any = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch { /* non-json */ }
+  return { text, parsed };
+}
+
 export async function probeInstantWorkerCapabilities(
   cfg: InstantPushConfig = loadInstantConfig(),
 ): Promise<InstantWorkerCapabilityResult> {
@@ -388,9 +395,7 @@ export async function probeInstantWorkerCapabilities(
       headers,
       body: '{}',
     });
-    const text = await res.text().catch(() => '');
-    let parsed: any = null;
-    try { parsed = text ? JSON.parse(text) : null; } catch { /* non-json */ }
+    const { text, parsed } = await resolveSafeFetchText(res);
 
     if (!res.ok) {
       return {
@@ -528,7 +533,7 @@ export async function sendInstantPush(
   if (!isInstantConfigReady(cfg)) {
     return { ok: false, error: '请先在 Settings → Instant Push 里配置并保存' };
   }
-  const url = `${cfg.workerUrl.replace(/\/+$/, '')}/instant`;
+  const url = `${normalizeWorkerUrl(cfg.workerUrl || '')}/instant`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (cfg.clientToken) headers['X-Client-Token'] = cfg.clientToken;
   // amsg-instant 0.8.0-next.4 起删了 splitPattern 字段, lib 不再做 split, hook
@@ -556,9 +561,7 @@ export async function sendInstantPush(
     const res = await fetchPromise;
     // res.text() 只能调一次 —— 拿原文后再 try parse JSON, 比先 json() 后 text() 灵活,
     // 而且 CF 边缘错误页是 HTML, json() 会 throw 丢掉原文.
-    const rawText = await res.text().catch(() => '');
-    let parsed: { success?: boolean; data?: unknown; error?: { message?: string } } | null = null;
-    try { parsed = rawText ? JSON.parse(rawText) : null; } catch { /* non-JSON */ }
+    const { text: rawText, parsed } = await resolveSafeFetchText(res);
     if (!res.ok) {
       const snippet = rawText
         ? maskHostsInText(rawText.slice(0, RESPONSE_SNIPPET_LIMIT), maskedHosts)
