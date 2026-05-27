@@ -14,6 +14,7 @@ import { loadMusicPlaybackSnapshot } from './MusicContext';
 import { setMinimaxRegion } from '../utils/minimaxEndpoint';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Capacitor } from '@capacitor/core';
+import { formatBytes } from '../utils/format';
 
 const normalizeProactiveAiContent = (raw: string): string => {
   let cleaned = raw;
@@ -26,10 +27,25 @@ const normalizeProactiveAiContent = (raw: string): string => {
 };
 
 
+type JSZipFileLike = {
+  async: (type: 'string' | 'base64') => Promise<string>;
+};
+
 type JSZipLike = {
   folder: (name: string) => { file: (name: string, data: string, options?: { base64?: boolean }) => void } | null;
-  file: (name: string) => { async: (type: 'string') => Promise<string> } | null;
-  generateAsync: (options: { type: 'blob' }, onUpdate?: (metadata: { percent: number }) => void) => Promise<Blob>;
+  file: {
+    (name: string): JSZipFileLike | null;
+    (name: string, data: string, options?: { base64?: boolean }): void;
+  };
+  generateAsync: (
+    options: {
+      type: 'blob';
+      streamFiles?: boolean;
+      compression?: string;
+      compressionOptions?: { level: number };
+    },
+    onUpdate?: (metadata: { percent: number }) => void
+  ) => Promise<Blob>;
 };
 
 type JSZipCtorLike = {
@@ -38,6 +54,52 @@ type JSZipCtorLike = {
 };
 
 let jszipCtorPromise: Promise<JSZipCtorLike> | null = null;
+
+export const IMPORT_IN_PROGRESS_KEY = 'sullyos_import_in_progress_v1';
+
+type ImportProgressUpdate = {
+  sourceSize?: number;
+  assetDone?: number;
+  assetTotal?: number;
+  current?: string;
+  currentFile?: string;
+  currentFileSize?: number;
+  itemDone?: number;
+  itemTotal?: number;
+  error?: string;
+};
+
+let _importStartedAt: number | null = null;
+let _importSource: string | null = null;
+
+const markImportInProgress = (phase: string, source?: string, update: ImportProgressUpdate = {}) => {
+  try {
+    let startedAt = Date.now();
+    let existingSource = source || null;
+
+    if (phase === 'parsing') {
+      _importStartedAt = startedAt;
+      _importSource = existingSource;
+    } else {
+      if (_importStartedAt) startedAt = _importStartedAt;
+      if (!existingSource && _importSource) existingSource = _importSource;
+    }
+
+    localStorage.setItem(IMPORT_IN_PROGRESS_KEY, JSON.stringify({
+      startedAt,
+      updatedAt: Date.now(),
+      phase,
+      source: existingSource,
+      ...update,
+    }));
+  } catch { /* ignore */ }
+};
+
+const clearImportInProgress = () => {
+  _importStartedAt = null;
+  _importSource = null;
+  try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); } catch { /* ignore */ }
+};
 
 const loadScript = (src: string): Promise<void> => new Promise((resolve, reject) => {
   const existing = document.querySelector(`script[data-src=\"${src}\"]`) as HTMLScriptElement | null;
@@ -93,6 +155,7 @@ const defaultRealtimeConfig: RealtimeConfig = {
   feishuAppSecret: '',
   feishuBaseId: '',
   feishuTableId: '',
+  xhsEnabled: false,
   cacheMinutes: 30
 };
 
@@ -2332,6 +2395,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               'bank_transactions', 'bank_data',
               'xhs_activities', 'xhs_stock',
               'quizzes', 'guidebook', 'scheduled_messages', 'life_sim',
+              'handbook', 'trackers', 'tracker_entries', 'hotnews_snapshots',
               'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
               'daily_schedule', 'memory_batches',
               'pixel_home_assets', 'pixel_home_layouts'
@@ -2432,6 +2496,28 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   }
                   return Object.keys(map).length > 0 ? map : undefined;
               })() : undefined,
+              chatTranslateSourceLangByChar: (mode === 'text_only' || mode === 'full') ? (() => {
+                  const map: Record<string, string> = {};
+                  for (let i = 0; i < localStorage.length; i++) {
+                      const key = localStorage.key(i);
+                      if (!key || !key.startsWith('chat_translate_source_lang_')) continue;
+                      const charId = key.replace('chat_translate_source_lang_', '');
+                      const value = localStorage.getItem(key);
+                      if (charId && value) map[charId] = value;
+                  }
+                  return Object.keys(map).length > 0 ? map : undefined;
+              })() : undefined,
+              chatTranslateTargetLangByChar: (mode === 'text_only' || mode === 'full') ? (() => {
+                  const map: Record<string, string> = {};
+                  for (let i = 0; i < localStorage.length; i++) {
+                      const key = localStorage.key(i);
+                      if (!key || !key.startsWith('chat_translate_lang_')) continue;
+                      const charId = key.replace('chat_translate_lang_', '');
+                      const value = localStorage.getItem(key);
+                      if (charId && value) map[charId] = value;
+                  }
+                  return Object.keys(map).length > 0 ? map : undefined;
+              })() : undefined,
               chatArchivePrompts: (mode === 'text_only' || mode === 'full') ? (() => { try { const s = localStorage.getItem('chat_archive_prompts'); return s ? JSON.parse(s) : undefined; } catch { return undefined; } })() : undefined,
               chatActiveArchivePromptId: (mode === 'text_only' || mode === 'full') ? (localStorage.getItem('chat_active_archive_prompt_id') || undefined) : undefined,
               characterRefinePrompts: (mode === 'text_only' || mode === 'full') ? (() => { try { const s = localStorage.getItem('character_refine_prompts'); return s ? JSON.parse(s) : undefined; } catch { return undefined; } })() : undefined,
@@ -2439,6 +2525,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
 
               // UI / 偏好
               scheduleAppTheme: (mode === 'text_only' || mode === 'full') ? (localStorage.getItem('schedule_app_theme') || undefined) : undefined,
+              handbookLifestreamDepth: (mode === 'text_only' || mode === 'full') ? (localStorage.getItem('handbook_lifestream_depth') || undefined) : undefined,
               groupchatContextLimit: (mode === 'text_only' || mode === 'full') ? (() => { const v = localStorage.getItem('groupchat_context_limit'); const n = v ? parseInt(v, 10) : NaN; return Number.isFinite(n) ? n : undefined; })() : undefined,
               browserConfig: (mode === 'text_only' || mode === 'full') ? (() => {
                   const braveKey = localStorage.getItem('browser_brave_key') || undefined;
@@ -2485,10 +2572,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   const savedPresetDecos = backupData.theme.desktopDecorations
                       ?.filter(d => d.type === 'preset')
                       .map(d => ({ id: d.id, content: d.content }));
-                  backupData.theme = stripBase64(backupData.theme);
+                  const strippedTheme = stripBase64(backupData.theme) as OSTheme;
+                  backupData.theme = strippedTheme;
                   // Restore preset SVGs and remove image decorations (they have no data in text mode)
-                  if (backupData.theme.desktopDecorations && savedPresetDecos) {
-                      backupData.theme.desktopDecorations = backupData.theme.desktopDecorations
+                  if (strippedTheme.desktopDecorations && savedPresetDecos) {
+                      strippedTheme.desktopDecorations = strippedTheme.desktopDecorations
                           .map(d => {
                               const saved = savedPresetDecos.find(p => p.id === d.id);
                               return saved ? { ...d, content: saved.content } : d;
@@ -2501,7 +2589,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           // Stores that never contain base64 image data — skip recursive traversal
           const noImageStores = new Set([
               'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
-              'bank_transactions', 'scheduled_messages', 'memory_batches'
+              'bank_transactions', 'scheduled_messages', 'memory_batches', 'hotnews_snapshots'
           ]);
 
           // Chunked processObject for large arrays — yields to main thread every 200 items
@@ -2651,6 +2739,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   case 'guidebook': backupData.guidebookSessions = processedData; break;
                   case 'scheduled_messages': backupData.scheduledMessages = processedData; break;
                   case 'life_sim': backupData.lifeSimState = Array.isArray(processedData) ? (processedData[0] || null) : (processedData || null); break;
+                  case 'handbook': backupData.handbooks = processedData; break;
+                  case 'trackers': backupData.trackers = processedData; break;
+                  case 'tracker_entries': backupData.trackerEntries = processedData; break;
+                  case 'hotnews_snapshots': backupData.hotNewsSnapshots = processedData; break;
                   case 'memory_nodes': backupData.memoryNodes = processedData; break;
                   case 'memory_vectors': backupData.memoryVectors = processedData; break;
                   case 'memory_links': backupData.memoryLinks = processedData; break;
@@ -2681,7 +2773,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               'customThemes', 'appearancePresets', 'courses', 'games', 'songs',
               'roomTodos', 'roomNotes', 'tasks', 'anniversaries', 'groups',
               'savedJournalStickers', 'emojiCategories', 'xhsStockImages',
-              'scheduledMessages',
+              'scheduledMessages', 'handbooks', 'trackers', 'trackerEntries', 'hotNewsSnapshots',
               'dailySchedules', 'memoryBatches', 'pixelHomeAssets', 'pixelHomeLayouts'] as const;
 
           // Build metadata (small fields) separately
@@ -2743,8 +2835,72 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   };
 
   const importSystem = async (fileOrJson: File | string): Promise<void> => {
+      const sourceName = typeof fileOrJson === 'string' ? 'json' : fileOrJson.name;
+      const sourceSize = typeof fileOrJson === 'string'
+          ? (typeof Blob !== 'undefined' ? new Blob([fileOrJson]).size : fileOrJson.length)
+          : fileOrJson.size;
+      const restoredAssetFiles = new Set<string>();
+      let totalAssetFiles = 0;
+      let lastProgress = 0;
+      let lastCurrent = '解析备份文件';
+      let lastCurrentFile: string | undefined;
+      let lastCurrentFileSize: number | undefined;
+
+      const buildImportMessage = (headline: string, update: ImportProgressUpdate = {}) => {
+          const lines = [headline];
+          const current = update.current ?? lastCurrent;
+          const currentFile = update.currentFile ?? lastCurrentFile;
+          const currentFileSize = update.currentFileSize ?? lastCurrentFileSize;
+          if (current) lines.push(`当前部分：${current}`);
+          if (typeof update.itemTotal === 'number' && update.itemTotal > 0) {
+              lines.push(`条目：${update.itemDone || 0}/${update.itemTotal}`);
+          }
+          if (currentFile) {
+              const sizeText = formatBytes(currentFileSize);
+              lines.push(`当前文件：${currentFile}${sizeText ? ` · ${sizeText}` : ''}`);
+          }
+          if (sourceName !== 'json' && update.current === '解析备份文件') {
+              const sizeText = formatBytes(sourceSize);
+              lines.push(`备份：${sourceName}${sizeText ? ` · ${sizeText}` : ''}`);
+          }
+          return lines.join('\n');
+      };
+
+      const showImportProgress = (
+          phase: string,
+          headline: string,
+          progress: number,
+          update: ImportProgressUpdate = {}
+      ) => {
+          if (update.current !== undefined) lastCurrent = update.current;
+          if (update.currentFile !== undefined) lastCurrentFile = update.currentFile;
+          if (update.currentFileSize !== undefined) lastCurrentFileSize = update.currentFileSize;
+          lastProgress = Math.max(lastProgress, Math.min(99, Math.max(0, progress)));
+          markImportInProgress(phase, sourceName, {
+              sourceSize,
+              assetDone: restoredAssetFiles.size,
+              assetTotal: totalAssetFiles || undefined,
+              ...update,
+          });
+          setSysOperation({
+              status: 'processing',
+              message: buildImportMessage(headline, update),
+              progress: lastProgress,
+          });
+      };
+
+      const countZipAssetFiles = (zip: JSZipLike) => {
+          const files = Object.values((zip as any).files || {}) as any[];
+          return files.filter(file => file && !file.dir && typeof file.name === 'string' && file.name.startsWith('assets/')).length;
+      };
+
+      const estimateBase64Bytes = (base64: string) => {
+          const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+          return Math.max(0, Math.floor(base64.length * 3 / 4) - padding);
+      };
+
+      showImportProgress('parsing', '正在解析备份文件...', 1, { current: '解析备份文件', sourceSize });
       try {
-          setSysOperation({ status: 'processing', message: '正在解析备份文件...', progress: 0 });
           let data: FullBackupData;
           let zip: JSZipLike | null = null;
 
@@ -2764,21 +2920,22 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   zip = loadedZip;
                   const dataFile = loadedZip.file("data.json");
                   if (!dataFile) throw new Error("损坏的备份包: 缺少 data.json");
-                  const jsonStr = await dataFile.async("string");
+                  let jsonStr = await dataFile.async("string");
+                  totalAssetFiles = countZipAssetFiles(loadedZip);
                   data = JSON.parse(jsonStr);
+                  jsonStr = '';
               }
           }
 
-          // Walk the tree once to collect every "assets/<name>" reference, then
-          // decode them in parallel batches. The previous version awaited each
-          // base64 decode sequentially, which made a 42 MB backup take 5+
-          // minutes and left the UI frozen at 50% — users assumed it had
-          // hung and refreshed before the success toast / reload could fire.
-          const restoreAssetsInPlace = async (root: any): Promise<void> => {
+          const hadAssetStoreBackup = data.assets !== undefined;
+          const hadCustomIconsBackup = data.customIcons !== undefined;
+          const hadAppearancePresetsBackup = data.appearancePresets !== undefined;
+
+          const restoreAssetsInPlace = async (root: any, label = '数据'): Promise<void> => {
               if (!zip) return;
 
               type Ref = { parent: any; key: string | number; filename: string };
-              const refs: Ref[] = [];
+              const refsByFile = new Map<string, Ref[]>();
               const seen = new WeakSet<object>();
               const stack: any[] = [root];
               while (stack.length) {
@@ -2790,7 +2947,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                       for (let i = 0; i < node.length; i++) {
                           const v = node[i];
                           if (typeof v === 'string' && v.startsWith('assets/')) {
-                              refs.push({ parent: node, key: i, filename: v.split('/')[1] });
+                              const filename = v.slice('assets/'.length);
+                              const refs = refsByFile.get(filename) || [];
+                              refs.push({ parent: node, key: i, filename });
+                              refsByFile.set(filename, refs);
                           } else if (v && typeof v === 'object') {
                               stack.push(v);
                           }
@@ -2800,7 +2960,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                           if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
                           const v = node[k];
                           if (typeof v === 'string' && v.startsWith('assets/')) {
-                              refs.push({ parent: node, key: k, filename: v.split('/')[1] });
+                              const filename = v.slice('assets/'.length);
+                              const refs = refsByFile.get(filename) || [];
+                              refs.push({ parent: node, key: k, filename });
+                              refsByFile.set(filename, refs);
                           } else if (v && typeof v === 'object') {
                               stack.push(v);
                           }
@@ -2808,43 +2971,74 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   }
               }
 
-              const total = refs.length;
-              if (total === 0) return;
+              const entries = Array.from(refsByFile.entries());
+              if (entries.length === 0) return;
 
-              const BATCH = 8;
-              let done = 0;
-              for (let i = 0; i < total; i += BATCH) {
-                  const batch = refs.slice(i, i + BATCH);
-                  await Promise.all(batch.map(async ({ parent, key, filename }) => {
-                      try {
-                          const fileInZip = zip!.file(`assets/${filename}`);
-                          if (!fileInZip) return;
-                          const base64 = await fileInZip.async("base64");
-                          const ext = (filename.split('.').pop() || 'png').toLowerCase();
-                          const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
-                              : ext === 'gif' ? 'image/gif'
-                              : ext === 'webp' ? 'image/webp'
-                              : 'image/png';
-                          parent[key] = `data:${mime};base64,${base64}`;
-                      } catch {
-                          console.warn(`Failed to restore asset: assets/${filename}`);
+              for (const [filename, refs] of entries) {
+                  const fileInZip = zip.file(`assets/${filename}`) as (JSZipFileLike & { _data?: { compressedSize?: number; uncompressedSize?: number } }) | null;
+                  const hintedSize = fileInZip?._data?.uncompressedSize || fileInZip?._data?.compressedSize;
+                  showImportProgress('assets', '正在恢复素材...', 35 + Math.floor((restoredAssetFiles.size / Math.max(1, totalAssetFiles || entries.length)) * 35), {
+                      current: label,
+                      currentFile: filename,
+                      currentFileSize: hintedSize,
+                      assetDone: restoredAssetFiles.size,
+                      assetTotal: totalAssetFiles || entries.length,
+                  });
+
+                  try {
+                      if (!fileInZip) {
+                          console.warn(`Missing asset in backup: assets/${filename}`);
+                          continue;
                       }
-                  }));
-                  done += batch.length;
-                  const pct = 50 + Math.floor((done / total) * 40);
-                  setSysOperation({ status: 'processing', message: `正在恢复素材 ${Math.min(done, total)}/${total}...`, progress: pct });
+                      const base64 = await fileInZip.async("base64");
+                      const ext = (filename.split('.').pop() || 'png').toLowerCase();
+                      const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+                          : ext === 'gif' ? 'image/gif'
+                          : ext === 'webp' ? 'image/webp'
+                          : 'image/png';
+                      const dataUri = `data:${mime};base64,${base64}`;
+                      for (const ref of refs) {
+                          ref.parent[ref.key] = dataUri;
+                      }
+                      const decodedSize = estimateBase64Bytes(base64);
+                      restoredAssetFiles.add(filename);
+                      showImportProgress('assets', '正在恢复素材...', 35 + Math.floor((restoredAssetFiles.size / Math.max(1, totalAssetFiles || entries.length)) * 35), {
+                          current: label,
+                          currentFile: filename,
+                          currentFileSize: decodedSize,
+                          assetDone: restoredAssetFiles.size,
+                          assetTotal: totalAssetFiles || entries.length,
+                      });
+                  } catch {
+                      console.warn(`Failed to restore asset: assets/${filename}`);
+                  }
+                  await new Promise<void>(resolve => setTimeout(resolve, 0));
               }
           };
 
-          setSysOperation({ status: 'processing', message: '正在恢复数据与素材...', progress: 50 });
-
-          if (zip) {
-              await restoreAssetsInPlace(data);
-          }
-
-          await DB.importFullData(data);
+          showImportProgress('database', '正在写入数据库...', 50, { current: '准备写入数据库', currentFile: '' });
+          await DB.importFullData(data, {
+              beforeWrite: restoreAssetsInPlace,
+              onProgress: progress => {
+                  const sectionRatio = progress.sectionTotal > 0
+                      ? progress.sectionDone / progress.sectionTotal
+                      : 0;
+                  const itemRatio = progress.itemTotal && progress.sectionTotal > 0
+                      ? ((progress.itemDone || 0) / progress.itemTotal) / progress.sectionTotal
+                      : 0;
+                  const dbProgress = 50 + Math.floor(Math.min(1, sectionRatio + itemRatio) * 40);
+                  showImportProgress('database', '正在写入数据库...', dbProgress, {
+                      current: progress.stage === 'done' ? `${progress.label}完成` : progress.label,
+                      currentFile: '',
+                      itemDone: progress.itemDone,
+                      itemTotal: progress.itemTotal,
+                  });
+              },
+          });
           
+          showImportProgress('settings', '正在恢复系统设置...', 92, { current: '系统设置', currentFile: '' });
           if (data.theme) {
+              await restoreAssetsInPlace(data.theme, '系统主题');
               await updateTheme(data.theme);
           }
           if (data.apiConfig) updateApiConfig(data.apiConfig);
@@ -2854,6 +3048,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           if (data.memoryPalaceConfig) updateMemoryPalaceConfig(data.memoryPalaceConfig); // 恢复记忆宫殿全局配置
 
           if (data.customIcons !== undefined || data.appearancePresets !== undefined) {
+              await restoreAssetsInPlace(data.customIcons, '应用图标');
+              await restoreAssetsInPlace(data.appearancePresets, '外观预设');
               const existingAssets = await DB.getAllAssets();
               if (Array.isArray(existingAssets)) {
                   for (const asset of existingAssets) {
@@ -2920,6 +3116,16 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   localStorage.setItem(`chat_translate_enabled_${charId}`, enabled ? 'true' : 'false');
               }
           }
+          if (data.chatTranslateSourceLangByChar && typeof data.chatTranslateSourceLangByChar === 'object') {
+              for (const [charId, lang] of Object.entries(data.chatTranslateSourceLangByChar)) {
+                  if (typeof lang === 'string') localStorage.setItem(`chat_translate_source_lang_${charId}`, lang);
+              }
+          }
+          if (data.chatTranslateTargetLangByChar && typeof data.chatTranslateTargetLangByChar === 'object') {
+              for (const [charId, lang] of Object.entries(data.chatTranslateTargetLangByChar)) {
+                  if (typeof lang === 'string') localStorage.setItem(`chat_translate_lang_${charId}`, lang);
+              }
+          }
           if (data.chatArchivePrompts !== undefined) localStorage.setItem('chat_archive_prompts', JSON.stringify(data.chatArchivePrompts));
           if (typeof data.chatActiveArchivePromptId === 'string') localStorage.setItem('chat_active_archive_prompt_id', data.chatActiveArchivePromptId);
           if (data.characterRefinePrompts !== undefined) localStorage.setItem('character_refine_prompts', JSON.stringify(data.characterRefinePrompts));
@@ -2927,6 +3133,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
 
           // Restore UI / 偏好
           if (typeof data.scheduleAppTheme === 'string') localStorage.setItem('schedule_app_theme', data.scheduleAppTheme);
+          if (typeof data.handbookLifestreamDepth === 'string') localStorage.setItem('handbook_lifestream_depth', data.handbookLifestreamDepth);
           if (typeof data.groupchatContextLimit === 'number') localStorage.setItem('groupchat_context_limit', String(data.groupchatContextLimit));
           if (data.browserConfig && typeof data.browserConfig === 'object') {
               if (typeof data.browserConfig.braveKey === 'string') localStorage.setItem('browser_brave_key', data.browserConfig.braveKey);
@@ -2944,6 +3151,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           }
           
           if (data.socialAppData) {
+              await restoreAssetsInPlace(data.socialAppData, '动态设置');
               if (data.socialAppData.charHandles) localStorage.setItem('spark_char_handles', JSON.stringify(data.socialAppData.charHandles));
               if (data.socialAppData.userId) localStorage.setItem('spark_user_id', data.socialAppData.userId);
               
@@ -2954,6 +3162,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           
           // Restore Room Custom Assets to DB (migrate old format on import)
           if (data.roomCustomAssets) {
+              await restoreAssetsInPlace(data.roomCustomAssets, '房间自定义素材');
               const migratedAssets = data.roomCustomAssets.map((a: any) => ({
                   ...a,
                   id: a.id || `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -2970,7 +3179,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           const novelList = await DB.getAllNovels();
           const songList = await DB.getAllSongs();
           
-          if (data.assets || data.customIcons !== undefined || data.appearancePresets !== undefined) {
+          if (hadAssetStoreBackup || hadCustomIconsBackup || hadAppearancePresetsBackup) {
               const assets = await DB.getAllAssets();
               const loadedIcons: Record<string, string> = {};
               const loadedPresets: AppearancePreset[] = [];
@@ -2998,6 +3207,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           if (songList.length > 0) setSongs(songList);
           
           setSysOperation({ status: 'idle', message: '', progress: 100 });
+          clearImportInProgress();
           addToast('恢复成功，系统即将重启...', 'success');
           setTimeout(() => window.location.reload(), 1500);
 
@@ -3005,6 +3215,15 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           console.error("Import Error:", e);
           setSysOperation({ status: 'idle', message: '', progress: 0 });
           const msg = e instanceof SyntaxError ? 'JSON 格式错误' : (e.message || '未知错误');
+          markImportInProgress('error', sourceName, {
+              sourceSize,
+              current: lastCurrent,
+              currentFile: lastCurrentFile,
+              currentFileSize: lastCurrentFileSize,
+              assetDone: restoredAssetFiles.size,
+              assetTotal: totalAssetFiles || undefined,
+              error: msg,
+          });
           throw new Error(`恢复失败: ${msg}`);
       }
   };

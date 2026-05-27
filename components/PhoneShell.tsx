@@ -2,7 +2,7 @@
 
 
 import React, { useState, useEffect } from 'react';
-import { useOS } from '../context/OSContext';
+import { IMPORT_IN_PROGRESS_KEY, useOS } from '../context/OSContext';
 import StatusBar from './os/StatusBar';
 import Launcher from '../apps/Launcher';
 import Settings from '../apps/Settings';
@@ -42,6 +42,7 @@ import { SpecialMomentsApp } from './ValentineEvent';
 import { Like520Controller, shouldShowLike520Popup } from './Like520Event';
 import { UpdateNotificationController, shouldShowUpdateNotification } from './UpdateNotificationEvent';
 import { WorkerUpdateReminderController, shouldShowWorkerUpdateReminder } from './WorkerUpdateReminderEvent';
+import { formatBytes } from '../utils/format';
 import { AppID } from '../types';
 import { App as CapApp } from '@capacitor/app';
 import { StatusBar as CapStatusBar, Style as StatusBarStyle } from '@capacitor/status-bar';
@@ -161,6 +162,44 @@ class AppErrorBoundary extends Component<{ children: React.ReactNode, onCloseApp
 
 const DISCLAIMER_KEY = 'sullyos_disclaimer_accepted';
 
+type ImportRecoveryMarker = {
+  startedAt?: number;
+  updatedAt?: number;
+  phase?: string;
+  source?: string;
+  sourceSize?: number;
+  current?: string;
+  currentFile?: string;
+  currentFileSize?: number;
+  assetDone?: number;
+  assetTotal?: number;
+  itemDone?: number;
+  itemTotal?: number;
+  error?: string;
+};
+
+const getPendingImportMarker = (): ImportRecoveryMarker | null => {
+  try {
+    const raw = localStorage.getItem(IMPORT_IN_PROGRESS_KEY);
+    return raw ? (JSON.parse(raw) as ImportRecoveryMarker) : null;
+  } catch {
+    return null;
+  }
+};
+
+const getImportPhaseLabel = (phase?: string) => {
+  switch (phase) {
+    case 'parsing': return '解析备份文件';
+    case 'assets': return '恢复备份素材';
+    case 'database': return '写入数据库';
+    case 'settings': return '恢复系统设置';
+    case 'error': return '导入报错';
+    default: return '导入流程';
+  }
+};
+
+
+
 const DisclaimerPopup: React.FC<{ onAccept: () => void }> = ({ onAccept }) => (
   <div className="fixed inset-0 z-[9999] flex items-center justify-center p-5 animate-fade-in">
     <div className="absolute inset-0 bg-black/60 backdrop-blur-md" />
@@ -207,6 +246,77 @@ const DisclaimerPopup: React.FC<{ onAccept: () => void }> = ({ onAccept }) => (
   </div>
 );
 
+const ImportRecoveryPopup: React.FC<{
+  marker: ImportRecoveryMarker | null;
+  onLater: () => void;
+  onReimport: () => void;
+}> = ({ marker, onLater, onReimport }) => {
+  const phaseLabel = getImportPhaseLabel(marker?.phase);
+  const startedAt = marker?.startedAt
+    ? new Date(marker.startedAt).toLocaleString('zh-CN')
+    : '';
+  const updatedAt = marker?.updatedAt
+    ? new Date(marker.updatedAt).toLocaleString('zh-CN')
+    : '';
+  const sourceSize = formatBytes(marker?.sourceSize);
+  const currentFileSize = formatBytes(marker?.currentFileSize);
+  const hasAssetProgress = typeof marker?.assetTotal === 'number' && marker.assetTotal > 0;
+  const hasItemProgress = typeof marker?.itemTotal === 'number' && marker.itemTotal > 0;
+  const hasError = !!marker?.error;
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-5 animate-fade-in">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-md" />
+      <div className="relative w-full max-w-sm bg-white/95 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border border-white/30 overflow-hidden animate-slide-up">
+        <div className="pt-7 pb-3 px-6 text-center">
+          <h2 className="text-lg font-extrabold text-slate-800">{hasError ? '上次导入失败了' : '上次导入被中断了'}</h2>
+          <p className="text-[11px] text-slate-400 mt-1">{hasError ? '错误信息已记录在本机' : '数据还没有完整恢复'}</p>
+        </div>
+
+        <div className="px-6 pb-4 space-y-3 max-h-[58vh] overflow-y-auto no-scrollbar">
+          <p className="text-[13px] text-slate-600 leading-relaxed">
+            {hasError
+              ? '系统检测到上一次导入过程中发生了错误。请重新导入同一个备份文件，避免数据只恢复了一半。'
+              : '系统检测到上一次导入没有走到完成步骤，可能是浏览器或系统在导入过程中强制重启了。请重新导入同一个备份文件，避免数据只恢复了一半。'}
+          </p>
+          {hasError && (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-3 text-[12px] text-red-700 leading-relaxed whitespace-pre-wrap break-words select-text">
+              {marker?.error}
+            </div>
+          )}
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 text-[12px] text-amber-700 leading-relaxed">
+            <div>中断阶段：{phaseLabel}</div>
+            {marker?.current && <div>当前部分：{marker.current}</div>}
+            {hasItemProgress && <div>条目进度：{marker?.itemDone || 0}/{marker?.itemTotal}</div>}
+            {hasAssetProgress && <div>素材进度：{marker?.assetDone || 0}/{marker?.assetTotal}</div>}
+            {marker?.currentFile && (
+              <div className="break-all">当前文件：{marker.currentFile}{currentFileSize ? ` · ${currentFileSize}` : ''}</div>
+            )}
+            {startedAt && <div>开始时间：{startedAt}</div>}
+            {updatedAt && <div>最后进度：{updatedAt}</div>}
+            {marker?.source && <div className="break-all">备份文件：{marker.source}{sourceSize ? ` · ${sourceSize}` : ''}</div>}
+          </div>
+        </div>
+
+        <div className="px-6 pb-7 pt-2 grid grid-cols-2 gap-3">
+          <button
+            onClick={onLater}
+            className="py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl active:scale-95 transition-transform text-sm"
+          >
+            稍后再说
+          </button>
+          <button
+            onClick={onReimport}
+            className="py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-bold rounded-2xl shadow-lg shadow-emerald-200 active:scale-95 transition-transform text-sm"
+          >
+            去重新导入
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const PhoneShell: React.FC = () => {
   const { theme, isLocked, unlock, activeApp, closeApp, openApp, virtualTime, isDataLoaded, toasts, unreadMessages, characters, handleBack, suspendedCall, resumeCall, activeCharacterId, errorDialog, dismissError } = useOS();
   const useIOSStandaloneLayout = isIOSStandaloneWebApp();
@@ -227,6 +337,29 @@ const PhoneShell: React.FC = () => {
     setShowDisclaimer(false);
   };
 
+  const [importRecoveryMarker, setImportRecoveryMarker] = useState<ImportRecoveryMarker | null>(() => {
+    try {
+      if (!localStorage.getItem(DISCLAIMER_KEY)) return null;
+      return getPendingImportMarker();
+    } catch {
+      return null;
+    }
+  });
+  const [importRecoveryDismissed, setImportRecoveryDismissed] = useState(false);
+  const showImportRecoveryPrompt = !!importRecoveryMarker;
+
+  useEffect(() => {
+    if (showDisclaimer || importRecoveryDismissed || importRecoveryMarker) return;
+    const marker = getPendingImportMarker();
+    if (marker) setImportRecoveryMarker(marker);
+  }, [showDisclaimer, importRecoveryDismissed, importRecoveryMarker]);
+
+  const handleReimportFromRecovery = () => {
+    setImportRecoveryDismissed(true);
+    setImportRecoveryMarker(null);
+    openApp(AppID.Settings);
+  };
+
   // Version update popup (2026-04) — forced once per user who hasn't seen it yet
   const [showUpdateNotification, setShowUpdateNotification] = useState(() => {
     try {
@@ -235,30 +368,30 @@ const PhoneShell: React.FC = () => {
   });
 
   useEffect(() => {
-    if (!showDisclaimer && !showUpdateNotification) {
+    if (!showDisclaimer && !showImportRecoveryPrompt && !showUpdateNotification) {
       if (shouldShowUpdateNotification()) {
         setShowUpdateNotification(true);
       }
     }
-  }, [showDisclaimer]);
+  }, [showDisclaimer, showImportRecoveryPrompt, showUpdateNotification]);
 
   // 520 特别活动弹窗（2026-05-20 当天，且没被 dismiss / completed）
   // 一次性：用户点过任何按钮就标记 dismissed，下次刷新不再出现；
   // API 配置改成弹窗内嵌，配完直接进活动，不再需要把弹窗暂存让位给 Settings。
   const [showLike520Popup, setShowLike520Popup] = useState(false);
   useEffect(() => {
-    if (showDisclaimer || showUpdateNotification) return;
+    if (showDisclaimer || showImportRecoveryPrompt || showUpdateNotification) return;
     if (!isDataLoaded) return;
     if (shouldShowLike520Popup()) setShowLike520Popup(true);
-  }, [showDisclaimer, showUpdateNotification, isDataLoaded]);
+  }, [showDisclaimer, showImportRecoveryPrompt, showUpdateNotification, isDataLoaded]);
 
   // Worker 后端更新提醒 — 只对启用了 Instant Push 的用户弹，且当前 worker 版本未确认过
   const [showWorkerUpdateReminder, setShowWorkerUpdateReminder] = useState(false);
   useEffect(() => {
-    if (showDisclaimer || showUpdateNotification || showLike520Popup) return;
+    if (showDisclaimer || showImportRecoveryPrompt || showUpdateNotification || showLike520Popup) return;
     if (!isDataLoaded) return;
     if (shouldShowWorkerUpdateReminder()) setShowWorkerUpdateReminder(true);
-  }, [showDisclaimer, showUpdateNotification, showLike520Popup, isDataLoaded]);
+  }, [showDisclaimer, showImportRecoveryPrompt, showUpdateNotification, showLike520Popup, isDataLoaded]);
 
   // Capacitor Native Handling
   useEffect(() => {
@@ -513,20 +646,29 @@ const PhoneShell: React.FC = () => {
        {/* First-time disclaimer popup */}
        {showDisclaimer && <DisclaimerPopup onAccept={handleAcceptDisclaimer} />}
 
+       {/* Interrupted import recovery reminder */}
+       {!showDisclaimer && showImportRecoveryPrompt && (
+         <ImportRecoveryPopup
+           marker={importRecoveryMarker}
+           onLater={() => { setImportRecoveryDismissed(true); setImportRecoveryMarker(null); }}
+           onReimport={handleReimportFromRecovery}
+         />
+       )}
+
        {/* Version update popup (2026-04) — forced until acknowledged */}
-       {!showDisclaimer && showUpdateNotification && (
+       {!showDisclaimer && !showImportRecoveryPrompt && showUpdateNotification && (
          <UpdateNotificationController onClose={() => setShowUpdateNotification(false)} />
        )}
 
        {/* 520 特别活动弹窗（2026-05-20 当天，一次性） */}
-       {!showDisclaimer && !showUpdateNotification && showLike520Popup && (
+       {!showDisclaimer && !showImportRecoveryPrompt && !showUpdateNotification && showLike520Popup && (
          <Like520Controller
            onClose={() => setShowLike520Popup(false)}
          />
        )}
 
        {/* Worker 后端更新提醒（仅启用 Instant Push 的用户，每个 worker 版本一次） */}
-       {!showDisclaimer && !showUpdateNotification && !showLike520Popup && showWorkerUpdateReminder && (
+       {!showDisclaimer && !showImportRecoveryPrompt && !showUpdateNotification && !showLike520Popup && showWorkerUpdateReminder && (
          <WorkerUpdateReminderController
            onClose={() => setShowWorkerUpdateReminder(false)}
          />

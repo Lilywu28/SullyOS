@@ -50,7 +50,7 @@ const DiagRow: React.FC<{ label: string; value: string; bad?: boolean }> = ({ la
 const Settings: React.FC = () => {
   const {
       apiConfig, updateApiConfig, closeApp, availableModels, setAvailableModels,
-      exportSystem, importSystem, addToast, resetSystem,
+      exportSystem, importSystem, addToast, showError, resetSystem,
       apiPresets, addApiPreset, removeApiPreset,
       sysOperation, // Get progress state
       realtimeConfig, updateRealtimeConfig, // 实时感知配置
@@ -470,7 +470,9 @@ const Settings: React.FC = () => {
       // Pass the File object directly to importSystem
       importSystem(file).catch(err => {
           console.error(err);
-          addToast(err.message || '恢复失败', 'error');
+          const details = err?.stack || err?.message || String(err || '未知错误');
+          showError('导入失败', details);
+          addToast('导入失败，错误信息已展开', 'error');
       });
       
       if (importInputRef.current) importInputRef.current.value = '';
@@ -517,7 +519,12 @@ const Settings: React.FC = () => {
 
   const handleCloudRestore = async (file: import('../types').CloudBackupFile) => {
       setShowCloudRestoreModal(false);
-      try { await cloudRestoreFromWebDAV(file); } catch { /* toast handled in context */ }
+      try {
+          await cloudRestoreFromWebDAV(file);
+      } catch (err: any) {
+          const details = err?.stack || err?.message || String(err || '未知错误');
+          showError('云端恢复失败', details);
+      }
   };
 
   // GitHub backup handlers — single "测试并连接" button does verify-token +
@@ -750,7 +757,7 @@ const Settings: React.FC = () => {
           <div className="absolute inset-0 z-50 bg-black/60 flex items-center justify-center animate-fade-in">
               <div className="bg-white p-6 rounded-3xl shadow-2xl flex flex-col items-center gap-4 w-64">
                   <div className="w-12 h-12 border-4 border-slate-200 border-t-primary rounded-full animate-spin"></div>
-                  <div className="text-sm font-bold text-slate-700">{sysOperation.message}</div>
+                  <div className="text-sm font-bold text-slate-700 text-center leading-relaxed whitespace-pre-wrap break-words max-w-full">{sysOperation.message}</div>
                   {sysOperation.progress > 0 && (
                       <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                           <div className="h-full bg-primary transition-all duration-300" style={{ width: `${sysOperation.progress}%` }}></div>

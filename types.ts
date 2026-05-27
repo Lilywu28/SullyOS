@@ -354,6 +354,27 @@ export interface HotNewsSnapshot {
   fetchedAt: number;   // 拉取时间戳
 }
 
+export interface MemoryPalaceBackupConfig {
+  embedding: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    dimensions: number;
+  };
+  lightLLM: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+  };
+  rerank: {
+    enabled: boolean;
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    topN: number;
+  };
+}
+
 export interface MemoryFragment {
   id: string;
   date: string;
@@ -1657,6 +1678,7 @@ export interface FullBackupData {
     apiPresets?: ApiPreset[];
     availableModels?: string[];
     realtimeConfig?: RealtimeConfig;  // 实时感知配置（天气/新闻/Notion）
+    memoryPalaceConfig?: MemoryPalaceBackupConfig;
     customIcons?: Record<string, string>;
     appearancePresets?: AppearancePreset[];
     characters?: CharacterProfile[];
@@ -1764,6 +1786,8 @@ export interface FullBackupData {
     // Chat 设置（翻译 / 归档 / 润色 prompts）
     chatTranslateSourceLang?: string;
     chatTranslateTargetLang?: string;
+    chatTranslateSourceLangByChar?: Record<string, string>;
+    chatTranslateTargetLangByChar?: Record<string, string>;
     chatTranslateEnabledByChar?: Record<string, boolean>;
     chatArchivePrompts?: any;
     chatActiveArchivePromptId?: string;
@@ -1772,11 +1796,13 @@ export interface FullBackupData {
 
     // 其它 UI / 偏好
     scheduleAppTheme?: string;
+    handbookLifestreamDepth?: string;
     groupchatContextLimit?: number;
     browserConfig?: { braveKey?: string; useRealSearch?: boolean };
     bm25Mode?: string;
     lastActiveCharId?: string;
     eventNotifFlags?: Record<string, string>;  // sullyos_* 事件通知标记
+    hotNewsSnapshots?: HotNewsSnapshot[];
 }
 
 // --- CLOUD BACKUP TYPES ---
