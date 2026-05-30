@@ -89,7 +89,7 @@ type Phase =
     | 'user_creator' | 'uncovered_line' | 'ending_screen'
     | 'loading_b' | 'wake_up' | 'letter' | 'puzzle' | 'done' | 'error';
 
-interface ChibiResult {
+export interface ChibiResult {
     dataUrl: string;
     frameDataUrl: string;
     transparentDataUrl: string;
@@ -120,17 +120,17 @@ const sullyPresets = (): Record<string, string> => ({
 // iframe 捏脸 wrapper
 // ============================================================
 
-interface CreatorIframeProps {
+export interface CreatorIframeProps {
     mode: 'char' | 'user';
     charName?: string;
-    presets?: Record<string, string>;
+    presets?: Record<string, any>;
     isSully?: boolean;
     onConfirm: (result: ChibiResult) => void;
 }
 
 const CHAR_CREATOR_URL = (((import.meta as any).env?.BASE_URL ?? '/') + 'like520/character_creator.html').replace(/\/+/g, '/');
 
-const CreatorIframe: React.FC<CreatorIframeProps> = ({ mode, charName, presets, isSully, onConfirm }) => {
+export const CreatorIframe: React.FC<CreatorIframeProps> = ({ mode, charName, presets, isSully, onConfirm }) => {
     const iframeRef = useRef<HTMLIFrameElement>(null);
 
     useEffect(() => {

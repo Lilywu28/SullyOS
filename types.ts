@@ -671,6 +671,22 @@ export interface VRWorldCharState {
     lastActiveAt?: number;
     /** 该角色专属 API 覆盖（用户可单独为「彼方」活动配 api）；不设则回落全局 apiConfig。 */
     api?: { baseUrl: string; apiKey: string; model: string };
+    /**
+     * 角色在「彼方」里的 chibi 形象（Q版小人）。启用自主登入时要求设定，可随时编辑。
+     * img 不设时回退到角色立绘/头像。
+     */
+    chibi?: {
+        /** 形象图（透明背景 PNG，来自特别时光的捏人器 transparentDataUrl） */
+        img: string;
+        /** 捏人器导出的完整状态，回填用于再编辑（state.selected 可作为 presets） */
+        state?: any;
+        /** 站位缩放（默认 1） */
+        scale?: number;
+        /** 垂直微调（px，负数上移，默认 0） */
+        offsetY?: number;
+        /** 是否水平翻转 */
+        flip?: boolean;
+    };
 }
 
 /** 注入聊天的 vr_card 消息的 metadata 结构。 */
