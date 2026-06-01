@@ -719,6 +719,11 @@ export interface InstantAwaitResult {
 
 const DEFAULT_INSTANT_TIMEOUT_MS = 90_000;
 
+// SSE 流结束后, 再给「SW 派发 → 客户端 flushInboxToChat 写完 DB」这一跳的宽限时长。
+// 流跑完 (stream_done) 只代表 payload 都交给了 SW, 不代表已落库; 真正的成功信号是
+// active-msg-received。这一跳正常 <1s, 给 8s 容错 (含 applyAssistantPostProcessing)。
+const SSE_FLUSH_GRACE_MS = 8_000;
+
 // /instant 与 /continue 都把预分配的 sessionId 作为 SW 投递的 requestId; 优先取
 // payload 自带的 instantTraceId (老格式兼容), 否则回落 sessionId / messageId。
 function resolveInstantTraceId(payload: any, fallback?: string): string {
@@ -903,10 +908,16 @@ export async function sendInstantPushAndAwaitReply(
       instantClientToken: cfg.clientToken || '',
     });
 
+    // postSsePayloadToServiceWorker 投递失败时 resolve(false) 而非 throw, 单看 stream
+    // 是否跑完识别不出失败。这里记下投递结果, 供下面 stream_done 分支判定 / 诊断用。
+    let sseDeliveredOk = false;
+    let sseDeliveryFailed = false;
     const streamPromise = reiClient.consumeInstantStream(wirePayload, '/instant', {
       signal: abortController.signal,
       onPayload: async (p: any) => {
-        await postSsePayloadToServiceWorker(p);
+        const delivered = await postSsePayloadToServiceWorker(p);
+        if (delivered) sseDeliveredOk = true;
+        else sseDeliveryFailed = true;
       },
     });
     // `consumeInstantStream()` calls fetch() synchronously before its first await,
@@ -948,6 +959,53 @@ export async function sendInstantPushAndAwaitReply(
           },
         },
       };
+    }
+
+    // result === 'arrived' 才是确定成功 (active-msg-received 已 fire = 消息落库)。
+    // result === 'stream_done' 只代表 worker 流结束 + payload 交给了 SW, 此时再给落库
+    // 这一跳一个短宽限: 等到 pushArrived 才算成功; 等不到按未达处理, 杜绝「流跑完就报
+    // 成功」的误报 (含 SW 投递失败只 resolve(false) 不抛、worker 因 SSE「成功」不再补
+    // Web Push 兜底 → 消息静默丢失却报 received 的情形)。
+    if (result === 'stream_done') {
+      const flushed = await Promise.race([
+        pushArrived.then(() => true),
+        new Promise<boolean>((r) => setTimeout(() => r(false), SSE_FLUSH_GRACE_MS)),
+      ]);
+      if (!flushed) {
+        abortController.abort();
+        const waitedMs = Date.now() - sendStartedAt;
+        appendDevDebugLlmLog({
+          url: cfg.workerUrl,
+          method: 'POST',
+          status: 200,
+          requestBody: {
+            transport: 'instant-push-sse',
+            sessionId,
+            ...business,
+            apiKey: business.apiKey ? '<redacted>' : '',
+          },
+          response: {
+            outcome: 'timeout',
+            reason: sseDeliveryFailed ? 'sse-delivery-failed' : 'flush-not-confirmed',
+            sseDeliveredOk,
+            waitedMs,
+          },
+        });
+        return {
+          ok: false,
+          outcome: 'timeout',
+          error: sseDeliveryFailed
+            ? 'AI 回复已生成，但本机 Service Worker 未确认收下（无 controller / 通道异常），消息可能未落库 —— 刷新页面后重试'
+            : `AI 回复已生成，但 ${Math.round(SSE_FLUSH_GRACE_MS / 1000)}s 内未确认写入本地 —— 刷新页面后重试`,
+          diagnostics: {
+            env, context,
+            timeout: {
+              waitedMs,
+              httpStatusWhenDispatched: 200,
+            },
+          },
+        };
+      }
     }
 
     appendDevDebugLlmLog({
