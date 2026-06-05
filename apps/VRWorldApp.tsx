@@ -752,7 +752,8 @@ const HelpModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     <Step n={2}>你在邮局面板点 <b>「一键寄出」</b>，信才真正漂出去（笔名自动匿名）。</Step>
                     <Step n={3}>点 <b>「刷新收件箱」</b>，捞回陌生人寄来的信；角色下次逛邮局时可能回它。</Step>
                     <Step n={4}>你寄出的信有人回了，点 <b>「收取回复」</b> 收回 → 角色读完写下感触，信<b>封存进「信匣」</b>。</Step>
-                    <div className="mt-1.5 text-white/60">· 待寄出的信 <b className="text-amber-200">长按可编辑 / 删除</b>。</div>
+                    <div className="mt-1.5 text-white/60">· 待寄出的信、待发送的回信都能点 <b className="text-amber-200">「···」编辑 / 删除</b>。</div>
+                    <div className="text-white/60">· 回信发出后，连同原来的来信一起归档到 <b style={{ color: '#86e3b0' }}>「已回」</b>，本地留存、随备份导出导入。</div>
                     <div className="text-white/60">· 每个分组都有颜色标签，一眼看出每封信的处境：<span className="text-amber-200">等你寄出</span> / <span className="text-sky-200">等角色回信</span> / <span style={{ color: '#93b8ff' }}>漂流中</span> / <span style={{ color: '#86e3b0' }}>已收到回复</span>。</div>
                 </Block>
 
@@ -789,14 +790,14 @@ const InboxLetterRow: React.FC<{ l: VRLetter; onMenu: (l: VRLetter) => void; onL
     );
 };
 
-// 亲自回信（不调用 LLM）
-const ReplyComposeModal: React.FC<{ letter: VRLetter; defaultPen: string; onSave: (pen: string, content: string) => void; onCancel: () => void }> = ({ letter, defaultPen, onSave, onCancel }) => {
+// 亲自回信 / 编辑回信（不调用 LLM）
+const ReplyComposeModal: React.FC<{ letter: VRLetter; defaultPen: string; initialContent?: string; title?: string; cta?: string; onSave: (pen: string, content: string) => void; onCancel: () => void }> = ({ letter, defaultPen, initialContent = '', title = '亲自回这封信', cta = '写好，排入待发送', onSave, onCancel }) => {
     const [pen, setPen] = useState(defaultPen);
-    const [content, setContent] = useState('');
+    const [content, setContent] = useState(initialContent);
     return (
         <div className="fixed inset-0 z-[300] flex items-center justify-center px-6 bg-black/55 backdrop-blur-sm" onClick={onCancel}>
             <div className="w-full max-w-[340px] rounded-2xl p-4" onClick={e => e.stopPropagation()} style={{ background: 'linear-gradient(180deg,#221b12,#15100a)', border: '1px solid rgba(220,190,120,.28)', boxShadow: '0 16px 50px rgba(0,0,0,.6)' }}>
-                <div className="text-[13px] font-semibold text-amber-100 mb-2" style={{ fontFamily: `'Noto Serif SC',serif` }}>亲自回这封信</div>
+                <div className="text-[13px] font-semibold text-amber-100 mb-2" style={{ fontFamily: `'Noto Serif SC',serif` }}>{title}</div>
                 <div className="rounded-lg bg-black/25 px-3 py-2 mb-3 text-[10.5px] text-white/55 leading-snug max-h-24 overflow-y-auto vr-reader-scroll" style={{ border: '1px solid rgba(255,255,255,.08)' }}>
                     原信（{letter.pen}）：{letter.content}
                 </div>
@@ -807,7 +808,7 @@ const ReplyComposeModal: React.FC<{ letter: VRLetter; defaultPen: string; onSave
                     className="w-full mt-1 rounded-lg bg-black/25 px-3 py-2 text-[12.5px] text-amber-50 placeholder-white/25 outline-none resize-none vr-reader-scroll" style={{ border: '1px solid rgba(220,190,120,.2)' }} />
                 <div className="flex gap-2 mt-3.5">
                     <button onClick={onCancel} className="flex-1 rounded-full py-2 text-[12.5px] text-white/70" style={{ border: '1px solid rgba(255,255,255,.16)' }}>取消</button>
-                    <button onClick={() => onSave(pen, content)} disabled={!content.trim()} className="flex-1 rounded-full py-2 text-[12.5px] font-semibold text-black disabled:opacity-40" style={{ background: 'linear-gradient(120deg,#f3d08a,#e8b75e)' }}>写好，排入待发送</button>
+                    <button onClick={() => onSave(pen, content)} disabled={!content.trim()} className="flex-1 rounded-full py-2 text-[12.5px] font-semibold text-black disabled:opacity-40" style={{ background: 'linear-gradient(120deg,#f3d08a,#e8b75e)' }}>{cta}</button>
                 </div>
             </div>
         </div>
@@ -984,12 +985,14 @@ const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void; chara
     const [inboxMenu, setInboxMenu] = useState<VRLetter | null>(null);   // 来信长按菜单
     const [assignFor, setAssignFor] = useState<VRLetter | null>(null);   // 指定角色回信的选人面板
     const [replyFor, setReplyFor] = useState<VRLetter | null>(null);     // 亲自回信编辑器
+    const [replyMenu, setReplyMenu] = useState<VRLetter | null>(null);   // 待发送回信的长按菜单
+    const [editReplyFor, setEditReplyFor] = useState<VRLetter | null>(null); // 编辑待发送回信
     const [confirmReport, setConfirmReport] = useState<VRLetter | null>(null); // 点踩=举报二次确认
     const [identityOpen, setIdentityOpen] = useState(false);            // 身份导出/导入弹窗
     const [adminOpen, setAdminOpen] = useState(false);                  // 后台（看后端全部信件）弹窗
     const [composeNew, setComposeNew] = useState<VRLetter | null>(null); // 用户自己写新信的草稿
     const [myStats, setMyStats] = useState<Record<string, RemoteLetterStat>>({}); // 我寄出的信热度（按 remoteId）
-    const [tab, setTab] = useState<'outbox' | 'reply' | 'inbox' | 'drift' | 'box'>('outbox'); // 左侧分类
+    const [tab, setTab] = useState<'outbox' | 'reply' | 'replied' | 'inbox' | 'drift' | 'box'>('outbox'); // 左侧分类
     const [sentMenu, setSentMenu] = useState<VRLetter | null>(null);     // 已寄出信的管理菜单
     const [confirmDelSent, setConfirmDelSent] = useState<VRLetter | null>(null); // 删除已寄出信的确认
     const enabledChars = characters.filter(c => c.vrState?.enabled);
@@ -1012,6 +1015,7 @@ const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void; chara
 
     const outQueued = letters.filter(l => l.box === 'outbox' && l.status === 'queued');
     const replyQueued = letters.filter(l => l.box === 'inbox' && l.replyStatus === 'queued' && l.reply);
+    const repliedSent = letters.filter(l => l.box === 'inbox' && l.replyStatus === 'sent' && l.reply);
     const inboxWaiting = letters.filter(l => l.box === 'inbox' && (l.replyStatus ?? 'none') === 'none');
     const sentAwaiting = letters.filter(l => l.box === 'outbox' && l.status === 'sent');
     const archived = letters.filter(l => l.box === 'outbox' && (l.status === 'archived' || l.status === 'sealed'));
@@ -1135,6 +1139,12 @@ const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void; chara
         await DB.saveVRLetter(next); setReplyFor(null); await load();
         addToast?.('回信已写好，去「待发送的回信」一键发送', 'success');
     };
+    // 编辑一条待发送的回信（改笔名 / 正文）
+    const saveReplyEdit = async (pen: string, content: string) => {
+        if (!editReplyFor || !editReplyFor.reply) return;
+        const next: VRLetter = { ...editReplyFor, reply: { ...editReplyFor.reply, pen: pen.trim() || editReplyFor.reply.pen, content: content.trim() } };
+        await DB.saveVRLetter(next); setEditReplyFor(null); await load();
+    };
 
     // 投票：点赞(1)/点踩=举报(-1)/撤销(0)。踩满阈值后端会删信 → 本地移除
     const doVote = async (l: VRLetter, vote: 1 | -1 | 0) => {
@@ -1201,6 +1211,7 @@ const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void; chara
                     {([
                         { key: 'outbox', label: '待寄出', count: outQueued.length, tone: '#e8b75e' },
                         { key: 'reply', label: '待发送', count: replyQueued.length, tone: '#e8b75e' },
+                        { key: 'replied', label: '已回', count: repliedSent.length, tone: '#86e3b0' },
                         { key: 'inbox', label: '收件箱', count: inboxWaiting.length, tone: '#7dd3fc' },
                         { key: 'drift', label: '漂流中', count: sentAwaiting.length, tone: '#93b8ff' },
                         { key: 'box', label: '信匣', count: archived.length, tone: '#86e3b0' },
@@ -1257,8 +1268,11 @@ const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void; chara
                                     <>
                                         <PagedList items={replyQueued} perPage={6} render={l => (
                                             <div key={l.id} className="rounded-lg p-2 mb-1.5" style={{ background: 'rgba(255,255,255,.05)' }}>
-                                                <p className="text-[10.5px] text-white/55 leading-snug mb-1">原信（{l.pen}）：<ExpandText text={l.content} limit={80} /></p>
-                                                <p className="text-[11.5px] text-amber-50/90 leading-snug whitespace-pre-wrap">回信：{l.reply!.content}</p>
+                                                <div className="flex items-start gap-1.5 mb-1">
+                                                    <p className="flex-1 min-w-0 text-[10.5px] text-white/55 leading-snug">原信（{l.pen}）：<ExpandText text={l.content} limit={80} /></p>
+                                                    <button onClick={() => setReplyMenu(l)} className="shrink-0 text-white/35 text-[14px] leading-none px-1 -mt-0.5 active:text-white/70">···</button>
+                                                </div>
+                                                <p className="text-[11.5px] text-amber-50/90 leading-snug whitespace-pre-wrap">回信（{l.reply!.pen}）：{l.reply!.content}</p>
                                                 <input value={l.reply!.userNote || ''} onChange={e => setUserNote(l, e.target.value)} placeholder="想补充几句一起回？（选填）"
                                                     className="w-full mt-1.5 rounded-md bg-black/20 px-2 py-1 text-[11px] text-white placeholder-white/30 outline-none" />
                                             </div>
@@ -1269,6 +1283,21 @@ const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void; chara
                             </>
                         );
                     })()}
+
+                    {tab === 'replied' && (
+                        repliedSent.length === 0 ? <p className="text-[10.5px] text-white/35 leading-relaxed">已经发出去的回信会归档在这里（连同原来的陌生来信）。本地留存，可随设备备份导出/导入。</p> : (
+                            <PagedList items={repliedSent} perPage={6} render={l => (
+                                <div key={l.id} className="rounded-lg p-2 mb-1.5" style={{ background: 'rgba(255,255,255,.05)' }}>
+                                    <div className="flex items-center gap-1.5 mb-1">
+                                        <span className="text-sky-200/70 text-[9.5px]">来自 {l.pen}</span>
+                                        <span className="text-[8px] text-emerald-200/70 border border-emerald-300/30 rounded-full px-1.5 leading-tight">已发出</span>
+                                    </div>
+                                    <p className="text-[10.5px] text-white/55 leading-snug mb-1">原信：<ExpandText text={l.content} limit={80} /></p>
+                                    <p className="text-[11.5px] text-amber-50/90 leading-snug whitespace-pre-wrap pl-2 border-l-2 border-amber-300/40">回信（{l.reply!.pen}）：{l.reply!.content}{l.reply!.userNote ? `\n——\n${l.reply!.userNote}` : ''}</p>
+                                </div>
+                            )} />
+                        )
+                    )}
 
                     {tab === 'inbox' && (
                         inboxWaiting.length === 0 ? <p className="text-[10.5px] text-white/35 leading-relaxed">点上方「刷新收件箱」捞陌生人寄来的信。收到后长按某封，指定角色去回、或你亲自回。</p> : (
@@ -1326,7 +1355,10 @@ const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void; chara
                     { label: '删除', danger: true, onClick: () => { setConfirmDel(menuFor); setMenuFor(null); } },
                 ]} onClose={() => setMenuFor(null)} />
             {editing && <LetterEditModal letter={editing} onSave={saveEdit} onCancel={() => setEditing(null)} />}
-            <ConfirmDialog open={!!confirmDel} title="删除这封信？" message={confirmDel ? '这封还没寄出的漂流信将被丢弃。' : ''}
+            <ConfirmDialog open={!!confirmDel} title="删除这封信？"
+                message={confirmDel ? (confirmDel.box === 'inbox'
+                    ? (confirmDel.replyStatus === 'queued' ? '这封陌生来信和你写好的回信都会被丢弃。' : '这封陌生来信将从本地删除。')
+                    : '这封还没寄出的漂流信将被丢弃。') : ''}
                 onConfirm={() => { if (confirmDel) void del(confirmDel.id); setConfirmDel(null); }} onCancel={() => setConfirmDel(null)} />
 
             {/* 已寄出信的作者管理：停止传播 / 删除 */}
@@ -1350,6 +1382,14 @@ const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void; chara
                 actions={enabledChars.map(c => ({ label: c.name, onClick: () => assignReply(c.id) }))}
                 onClose={() => setAssignFor(null)} />
             {replyFor && <ReplyComposeModal letter={replyFor} defaultPen={userName} onSave={saveManualReply} onCancel={() => setReplyFor(null)} />}
+
+            {/* 待发送回信：编辑 / 删除 */}
+            <ActionSheet open={!!replyMenu} title={replyMenu ? `这条待发送的回信（回 ${replyMenu.pen}）` : ''}
+                actions={[
+                    { label: '编辑回信', onClick: () => { setEditReplyFor(replyMenu); setReplyMenu(null); } },
+                    { label: '删除（连来信一起丢弃）', danger: true, onClick: () => { setConfirmDel(replyMenu); setReplyMenu(null); } },
+                ]} onClose={() => setReplyMenu(null)} />
+            {editReplyFor && editReplyFor.reply && <ReplyComposeModal letter={editReplyFor} defaultPen={editReplyFor.reply.pen} initialContent={editReplyFor.reply.content} title="编辑这条回信" cta="保存" onSave={saveReplyEdit} onCancel={() => setEditReplyFor(null)} />}
 
             {/* 投票=举报 二次确认 */}
             <ConfirmDialog open={!!confirmReport} title="点踩 = 举报这封信？" confirmText="确认举报"
