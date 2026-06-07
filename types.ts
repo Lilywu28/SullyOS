@@ -891,8 +891,8 @@ export interface VRActorNote {
     roleName: string;
     /** 一句吐槽 / 想法（UI 展示） */
     note: string;
-    /** 具体的台词/动作修改方案（可空） */
-    changes?: string;
+    /** 角色按自己本色重写过的"我这部分台词 / 怎么演"（可空 = 照原本演） */
+    lines?: string;
     /** 态度光谱：欣然 / 配合 / 勉强 / 隐忍 / 抵触 / 拒演（按角色性子自然落点，不必都硬刚） */
     attitude?: string;
     /** 是否配合（由 attitude 推导：抵触/拒演 = false） */

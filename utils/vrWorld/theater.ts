@@ -91,7 +91,7 @@ async function perRoleNotes(script: VRScript, cast: VRCastAssign[], charAssigns:
             const userTurn = buildActorReviewTurn(script.title, script.logline, script.body, a.roleName, line, char.name);
             const out = await chat(api, [{ role: 'system', content: payload.systemPrompt }, ...payload.cleanedApiMessages, { role: 'user', content: userTurn }]);
             const p = parseActorReview(out);
-            return { actorId: char.id, actorName: char.name, roleName: a.roleName, note: p.note, changes: p.changes, attitude: p.attitude, cooperative: p.cooperative };
+            return { actorId: char.id, actorName: char.name, roleName: a.roleName, note: p.note, lines: p.lines, attitude: p.attitude, cooperative: p.cooperative };
         } catch {
             return { actorId: char.id, actorName: char.name, roleName: a.roleName, note: '（没能读完剧本，先就位了）', attitude: '配合', cooperative: true };
         }
@@ -114,8 +114,8 @@ async function batchNotes(script: VRScript, charAssigns: VRCastAssign[], ctx: Th
         parsed = parseActorsBatch(out);
     } catch { /* 失败则全体默认就位 */ }
     return charAssigns.map(a => {
-        const p = parsed[a.actorName] || { note: '（没给具体意见，听导演的）', cooperative: true, changes: undefined, attitude: '配合' };
-        return { actorId: a.actorId, actorName: a.actorName, roleName: a.roleName, note: p.note, changes: p.changes, attitude: p.attitude, cooperative: p.cooperative };
+        const p = parsed[a.actorName] || { note: '（没给具体意见，听导演的）', cooperative: true, lines: undefined, attitude: '配合' };
+        return { actorId: a.actorId, actorName: a.actorName, roleName: a.roleName, note: p.note, lines: p.lines, attitude: p.attitude, cooperative: p.cooperative };
     });
 }
 
@@ -141,8 +141,8 @@ export function charActorCount(cast: VRCastAssign[]): number {
     return cast.filter(c => !c.isNpc).length;
 }
 
-/** 导演整合：原剧本 + 参演角色本色 + 全体意见 → 最终演出脚本 + 观众锐评 + 评级。 */
-export async function runDirector(script: VRScript, cast: VRCastAssign[], notes: VRActorNote[], ctx: TheaterCtx, api: TheaterApi): Promise<ParsedDirector> {
+/** 导演整合：原剧本 + 角色本色 + 演员自重写台词 + 用户硬性要求 → 最终演出脚本 + 锐评 + 评级。 */
+export async function runDirector(script: VRScript, cast: VRCastAssign[], notes: VRActorNote[], ctx: TheaterCtx, api: TheaterApi, userRequirement?: string): Promise<ParsedDirector> {
     // 给导演注入每位演员的本色，避免导演反手把角色写 OOC
     const personas = cast.map(c => {
         if (c.isNpc) return { actorName: c.actorName, roleName: c.roleName, persona: '即兴客串的 NPC，无固定人设，可自由塑造' };
@@ -154,7 +154,7 @@ export async function runDirector(script: VRScript, cast: VRCastAssign[], notes:
         content: buildDirectorTurn(
             script.title, script.logline, script.body,
             cast.map(c => ({ roleName: c.roleName, actorName: c.actorName })),
-            personas, notes, STAGE_BUBBLE_MAX,
+            personas, notes, STAGE_BUBBLE_MAX, userRequirement,
         ),
     }], 0.85);
     return parseDirectorOutput(out);

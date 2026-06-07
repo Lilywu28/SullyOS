@@ -695,12 +695,11 @@ export function buildActorReviewTurn(title: string, logline: string, body: strin
         '',
         `以"${selfName}这个人"的身份读完它，给导演一个真实反应。`,
         ATTITUDE_GUIDE,
-        `想改台词/动作就具体说给导演，没有就不改。`,
         '',
         '用下面标签作答（标签外不要写别的）：',
         `<态度>欣然 / 配合 / 勉强 / 隐忍 / 抵触 / 拒演 里选一个</态度>`,
         `<意见>带着你上面那个态度的语气，说一句此刻的真实想法/吐槽</意见>`,
-        `<修改>具体想改的台词或动作方案；没有就写：无</修改>`,
+        `<台词>把你这个角色的台词，按"${selfName}自己的说话方式"重写一遍（连带你想改的动作/神态也写进来，用括号标）。这是你将真正在台上说的话，所以请完整覆盖你的戏份。要是觉得原剧本写得就挺好、照演即可，就只写：照原本</台词>`,
     ].join('\n');
 }
 
@@ -717,12 +716,12 @@ export function buildActorsBatchTurn(title: string, logline: string, body: strin
         `请你**分别**站在每位演员的立场、按各自性格给导演反应。`,
         ATTITUDE_GUIDE,
         `**态度别整齐划一**：让不同人落在光谱不同点上；但记住大家都是自愿来玩的，别把谁写成跟人结仇。`,
-        `每位演员用一个 <演员> 块（标签外不要写别的）：`,
-        cast.map(c => `<演员 名="${c.actorName}">\n<态度>欣然/配合/勉强/隐忍/抵触/拒演 选一</态度>\n<意见>带该态度语气的一句话</意见>\n<修改>...或：无</修改>\n</演员>`).join('\n'),
+        `每位演员用一个 <演员> 块（标签外不要写别的）。<台词>里把该演员的戏份按 ta 自己的口吻重写（动作用括号标），照原本演就写"照原本"：`,
+        cast.map(c => `<演员 名="${c.actorName}">\n<态度>欣然/配合/勉强/隐忍/抵触/拒演 选一</态度>\n<意见>带该态度语气的一句话</意见>\n<台词>该演员重写后的戏份…或：照原本</台词>\n</演员>`).join('\n'),
     ].join('\n');
 }
 
-export interface ParsedActorReview { note: string; changes?: string; attitude: string; cooperative: boolean; }
+export interface ParsedActorReview { note: string; lines?: string; attitude: string; cooperative: boolean; }
 
 const UNCOOP_ATTITUDES = ['抵触', '拒演', '拒绝'];
 
@@ -730,10 +729,11 @@ export function parseActorReview(raw: string): ParsedActorReview {
     const pick = (tag: string) => { const m = raw.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`)); return m ? m[1].trim() : ''; };
     const attitude = (stripLeakedAttrs(pick('态度')) || '配合').replace(/[。.,，\s].*$/, '').trim() || '配合';
     const note = stripLeakedAttrs(pick('意见')) || '（没什么意见）';
-    const changesRaw = stripLeakedAttrs(pick('修改'));
-    const changes = (!changesRaw || changesRaw === '无' || changesRaw === '没有') ? undefined : changesRaw;
+    // 兼容旧标签 <修改>；新标签是 <台词>（演员重写自己的戏份）
+    const linesRaw = stripLeakedAttrs(pick('台词') || pick('修改'));
+    const lines = (!linesRaw || /^(照原本|无|没有|不改)$/.test(linesRaw)) ? undefined : linesRaw;
     const cooperative = !UNCOOP_ATTITUDES.some(k => attitude.includes(k));
-    return { note, changes, attitude, cooperative };
+    return { note, lines, attitude, cooperative };
 }
 
 /** 解析"一次扮演所有演员"的批量意见，按 名= 归位。 */
@@ -747,32 +747,38 @@ export function parseActorsBatch(raw: string): Record<string, ParsedActorReview>
     return out;
 }
 
-/** 导演整合：原剧本 + 演员完整人设 + 全体态度意见 → 最终演出脚本 + 观众锐评 + 严格评级。 */
+/** 导演整合：原剧本 + 演员完整人设 + 演员自重写的台词 + 用户硬性要求 → 最终演出脚本 + 锐评 + 评级。 */
 export function buildDirectorTurn(
     title: string, logline: string, body: string,
     cast: { roleName: string; actorName: string }[],
     personas: { actorName: string; roleName: string; persona: string }[],
-    notes: { actorName: string; roleName: string; note: string; changes?: string; attitude?: string; cooperative: boolean }[],
+    notes: { actorName: string; roleName: string; note: string; lines?: string; attitude?: string; cooperative: boolean }[],
     bubbleMax: number,
+    userRequirement?: string,
 ): string {
     const roster = cast.map(c => `${c.actorName} 饰 ${c.roleName}`).join('；');
     const cards = personas.map(p => `———— ${p.actorName}（饰 ${p.roleName}）的完整人设 ————\n${p.persona || '（无特别设定）'}`).join('\n\n');
     const feedback = notes.map(n =>
-        `· ${n.actorName}（${n.roleName}）态度【${n.attitude || (n.cooperative ? '配合' : '抵触')}】：${n.note}${n.changes ? `；想改：${n.changes}` : ''}`
+        `· ${n.actorName}（${n.roleName}）态度【${n.attitude || (n.cooperative ? '配合' : '抵触')}】：${n.note}\n  ${n.lines ? `ta 按自己口吻重写的戏份（请尽量原样保留这些台词/语气）：\n  「${n.lines.replace(/\n/g, '\n  ')}」` : '（照原剧本演即可）'}`
     ).join('\n');
     return [
         `你是这出舞台剧《${title}》（${logline}）的导演兼旁白。演员与角色：${roster}。`,
         '',
-        `**参演演员的完整人设（写每个人的台词都必须分别贴合 ta，谁都不能 OOC；也据此判断"选角贴不贴合角色"）**：`,
+        ...(userRequirement && userRequirement.trim() ? [
+            `【用户的硬性要求 · 最高优先级】：${userRequirement.trim()}`,
+            `这些是观众一定要看到的内容，**必须在演出中完整体现，绝不能删减、淡化或绕过**。如果某演员不情愿演这部分，也只能用"干巴巴棒读、敷衍、心不在焉、出戏、机械照念"等消极方式来表现 ta 的不情愿——但**该说的台词、该演的情节必须照样出现**。`,
+            '',
+        ] : []),
+        `**参演演员的完整人设（判断"选角贴不贴合角色"、以及在演员没自己写台词时据此补写，别 OOC）**：`,
         cards || '（无）',
         '',
         '原始剧本：',
         body,
         '',
-        '演员们读完后的态度与意见（大家是约好一起来玩话剧的、本子和角色都是 roll 到的，态度只是"对 roll 到的角色合不合胃口"——请尊重各自态度：欣然就顺着演；勉强/隐忍就让那点"不太想演这角色"的别扭从神态细节里渗出来；抵触/拒演就让 ta 出点戏、敷衍、或临时找导演救场，但**别写成反目成仇/敌对**，底色始终是"来都来了陪大家玩"）：',
+        '演员们读完后的态度，以及【他们各自按本色重写好的戏份】（大家是约好一起来玩话剧的、本子和角色都是 roll 到的，态度只是"对 roll 到的角色合不合胃口"。**他们重写的台词请尽量原样保留**，你主要负责把各人的台词按顺序串成完整演出、补旁白、安排上下场、把态度表现化进去；欣然就顺；勉强/隐忍让别扭从神态细节渗出；抵触/拒演让 ta 棒读/敷衍/出戏，但**别写成反目成仇**，底色是"来都来了陪大家玩"）：',
         feedback || '（演员没什么意见）',
         '',
-        `请整合成最终演出版，每句台词贴合对应演员的本色，然后严格按下面格式输出（标签外不要写别的）：`,
+        `请整合成最终演出版，尽量保留每位演员重写的台词与语气，然后严格按下面格式输出（标签外不要写别的）：`,
         `<终本>`,
         `每行一拍，用竖线分隔，四种拍：`,
         `旁白|内容 —— 旁白不止写环境/动作，更可以是旁白君的吐槽、临场救场圆场、对演员演技或状况的调侃，让旁白有戏、有态度，别只写"（灯光暗下）"这种干提示`,

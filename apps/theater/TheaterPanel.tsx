@@ -235,6 +235,7 @@ const StageView: React.FC<{ script: VRScript; ctx: TheaterCtx; apiConfig: any; a
     const [polishOpen, setPolishOpen] = useState(false);
     const [rolling, setRolling] = useState('');
     const [npcEdit, setNpcEdit] = useState<{ roleName: string } | null>(null);
+    const [userReq, setUserReq] = useState('');
 
     const charOpts = useMemo(() => [{ key: '', label: '— 选演员 —' }, ...ctx.characters.map(c => ({ key: c.id, label: c.name }))], [ctx.characters]);
     const cast = useMemo(() => script.roles.map(r => assign[r.name]).filter(Boolean) as VRCastAssign[], [assign, script.roles]);
@@ -276,8 +277,8 @@ const StageView: React.FC<{ script: VRScript; ctx: TheaterCtx; apiConfig: any; a
             setNotes(result); setStep('notes');
             for (const n of result) {
                 if (n.actorId.startsWith('npc')) continue;
-                const act = !n.cooperative ? `对舞台剧《${script.title}》有点抵触，觉得：${n.note}` : n.changes ? `修改了舞台剧《${script.title}》的内容，觉得：${n.note}` : `读了舞台剧《${script.title}》，觉得：${n.note}`;
-                await DB.saveMessage({ charId: n.actorId, role: 'assistant', type: 'vr_card', content: `「彼方 · 剧院」${n.actorName}${act}`, metadata: { vrCard: true, room: 'theater', activity: act, behavior: n.changes } } as any);
+                const act = !n.cooperative ? `对舞台剧《${script.title}》有点抵触，觉得：${n.note}` : n.lines ? `把自己在《${script.title}》里的戏份改成了自己的演法，觉得：${n.note}` : `读了舞台剧《${script.title}》，觉得：${n.note}`;
+                await DB.saveMessage({ charId: n.actorId, role: 'assistant', type: 'vr_card', content: `「彼方 · 剧院」${n.actorName}${act}`, metadata: { vrCard: true, room: 'theater', activity: act, behavior: n.lines } } as any);
             }
         } catch (e: any) { addToast?.('编排失败：' + (e?.message || '检查网络/API'), 'error'); }
         finally { setBusy(''); }
@@ -288,7 +289,7 @@ const StageView: React.FC<{ script: VRScript; ctx: TheaterCtx; apiConfig: any; a
         if (!api) { addToast?.('没配 API', 'error'); return; }
         setBusy('导演在整合最终本…');
         try {
-            const d = await runDirector(script, cast, notes, ctx, api);
+            const d = await runDirector(script, cast, notes, ctx, api, userReq.trim() || undefined);
             const play: VRStagedPlay = { id: tid('play'), scriptId: script.id, title: script.title, logline: script.logline, cast, notes, stage: d.stage, reviews: d.reviews, rating: d.rating, createdAt: Date.now() };
             const castNames = cast.map(c => c.actorName).join('、');
             for (const c of cast) { if (c.isNpc) continue; const act = `参演的舞台剧《${script.title}》落幕了（演员：${castNames}）。综评 ${d.rating}`; await DB.saveMessage({ charId: c.actorId, role: 'assistant', type: 'vr_card', content: `「彼方 · 剧院」${act}`, metadata: { vrCard: true, room: 'theater', activity: act } } as any); }
@@ -362,8 +363,13 @@ const StageView: React.FC<{ script: VRScript; ctx: TheaterCtx; apiConfig: any; a
 
             {step === 'notes' && (
                 <>
-                    <div style={{ fontSize: 11, letterSpacing: '.12em', color: TH.goldSoft, fontFamily: SERIF, marginBottom: 8 }}>演员就位 · 各自的意见</div>
+                    <div style={{ fontSize: 11, letterSpacing: '.12em', color: TH.goldSoft, fontFamily: SERIF, marginBottom: 8 }}>演员就位 · 各自的演法</div>
                     <div className="space-y-2 mb-3">{notes.map((n, i) => <ActorNoteCard key={i} note={n} cast={cast} characters={ctx.characters} />)}</div>
+                    <div style={{ ...cardStyle, marginBottom: 12 }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: TH.gold, marginBottom: 4 }}>🎬 你想看的（导演必须满足 · 最高优先级）</div>
+                        <div style={{ fontSize: 9.5, color: TH.sub, marginBottom: 6, lineHeight: 1.5 }}>写下你一定要看到的情节/名场面/台词。导演不能删，演员若不情愿也只会棒读/敷衍，但照样得演。</div>
+                        <textarea value={userReq} onChange={e => setUserReq(e.target.value)} rows={2} placeholder="可空。例：必须有一段两人对跳的舞 / 一定要让 XX 说出那句台词" style={taStyle} />
+                    </div>
                     <TButton variant="primary" block icon={<FilmSlate size={14} weight="fill" />} onClick={summonDirector}>召唤导演 · 整合最终本</TButton>
                 </>
             )}
@@ -406,7 +412,8 @@ const ActorNoteCard: React.FC<{ note: VRActorNote; cast: VRCastAssign[]; charact
                 <span className="ml-auto" style={{ fontSize: 9.5, fontWeight: 800, color: attColor, border: `1px solid ${attColor}`, borderRadius: 999, padding: '1px 8px' }}>{att}</span>
             </div>
             <p style={{ fontSize: 11, color: TH.text, marginTop: 4, lineHeight: 1.45 }}>{note.note}</p>
-            {open && note.changes && <p style={{ fontSize: 10.5, color: TH.gold, marginTop: 4, paddingLeft: 8, borderLeft: `2px solid ${TH.gold}`, lineHeight: 1.45 }}>改：{note.changes}</p>}
+            {note.lines && <p style={{ fontSize: 9, color: TH.goldSoft, marginTop: 3 }}>{open ? '▾ 收起 ta 重写的戏份' : '▸ ta 重写了自己的戏份，点开看'}</p>}
+            {open && note.lines && <pre style={{ fontSize: 10.5, color: TH.text, marginTop: 4, padding: 8, background: TH.bg3, borderRadius: 8, borderLeft: `2px solid ${TH.gold}`, lineHeight: 1.5, whiteSpace: 'pre-wrap', fontFamily: SERIF }}>{note.lines}</pre>}
         </button>
     );
 };
