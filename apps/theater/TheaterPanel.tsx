@@ -426,15 +426,25 @@ const PlaybackView: React.FC<{ play: VRStagedPlay; characters: CharacterProfile[
     const beats = play.stage;
     const ended = i >= beats.length;
 
+    // 名字→选角：演员名和角色名都映射到同一个 assign，
+    // 这样导演终本里无论写"演员名"还是"角色名"，回放都能找回该演员的 chibi。
+    const assignByName = useMemo(() => {
+        const m = new Map<string, VRCastAssign>();
+        for (const c of play.cast) { m.set(c.actorName, c); m.set(c.roleName, c); }
+        return m;
+    }, [play.cast]);
+    /** 任意名字 → 该演员的展示名（统一成演员名，便于站位去重/高亮） */
+    const canon = (name?: string): string => (name && assignByName.get(name)?.actorName) || name || '';
+
     const onStage = useMemo(() => {
         const s = new Set<string>();
-        for (let k = 0; k <= Math.min(i, beats.length - 1); k++) { const b = beats[k]; if (b.kind === 'enter' && b.actorName) s.add(b.actorName); if (b.kind === 'exit' && b.actorName) s.delete(b.actorName); }
+        for (let k = 0; k <= Math.min(i, beats.length - 1); k++) { const b = beats[k]; if (b.kind === 'enter' && b.actorName) s.add(canon(b.actorName)); if (b.kind === 'exit' && b.actorName) s.delete(canon(b.actorName)); }
         if (s.size === 0) play.cast.forEach(c => s.add(c.actorName));
         return s;
     }, [i, beats, play.cast]);
 
     const chibiOf = (name: string): { img?: string; scale: number; offsetY: number; flip: boolean } => {
-        const a = play.cast.find(c => c.actorName === name);
+        const a = assignByName.get(name);
         if (a?.npcChibi) return { img: a.npcChibi, scale: 1, offsetY: 0, flip: false };
         const ch = characters.find(c => c.id === a?.actorId);
         if (ch) { const d = getChibi(ch); return { img: d.img || undefined, scale: d.scale, offsetY: d.offsetY, flip: d.flip }; }
@@ -442,7 +452,7 @@ const PlaybackView: React.FC<{ play: VRStagedPlay; characters: CharacterProfile[
     };
 
     const beat = beats[Math.min(i, beats.length - 1)];
-    const speaker = beat?.kind === 'line' ? beat.actorName : undefined;
+    const speaker = beat?.kind === 'line' ? canon(beat.actorName) : undefined;
     const stageArr = [...onStage];
 
     return (
