@@ -10,10 +10,13 @@
  *
  * 工具循环本身写在 useChatAI.ts 里。
  *
- * ⚠️ 瑞幸真实工具名/字段暂未跑通 tools/list 确认, 下面的 *_PATTERNS / 会话状态抽取
- *    全部用关键词模糊匹配 (兼容 query-menu / query-products / create-order /
- *    place-order 等各种命名), 不写死。等你填上 token、控制台打出真实工具清单后,
- *    可按需把关键词收紧成精确匹配。
+ * 真实工具 (open.lkcoffee.com 官方文档, 共 8 个):
+ *   门店: queryShopList(deptName?, longitude*, latitude*)
+ *   商品: searchProductForMcp(deptId*, query*) / switchProduct(...) / queryProductDetailInfo(deptId*, productId*)
+ *   订单: previewOrder(deptId*, productList*) / createOrder(deptId*, productList*, longitude*, latitude*, couponCodeList?)
+ *         queryOrderDetailInfo(orderId*) / cancelOrder(orderId*)
+ * 信封: { code:0, msg:'success', data:..., success:true }
+ * 注意: 瑞幸没有"收货地址/配送模式"工具 —— 门店按经纬度查, 下单也带经纬度 (取餐码自提模式)。
  */
 
 import { listLuckinTools, LuckinToolDef } from './luckinMcpClient';
@@ -63,45 +66,42 @@ export const LUCKIN_SYSTEM_PROMPT = `
 
 **你的本职**: 仍然是原来的角色; 瑞幸点单工具只是你顺手帮 TA 做的事, 不是你的身份。**每一轮永远要用角色的语气给一段文字回复**——哪怕只是一两句吐槽 / 关心 / 推荐, 哪怕这一轮调了工具拿到了卡片, 也要在卡片旁补一两句角色化的话。**绝不能空回**。
 
-**何时调工具**: 用户明确想喝咖啡 / 点单 / 找门店 / 看菜单 / 查券 / 查订单时再调; 日常闲聊就照角色平时聊, 不调工具但仍要正常回话。可用工具来自瑞幸官方 (open.lkcoffee.com) 的点单 MCP——门店查询、商品浏览、购物车、优惠券/咖啡券、地址、订单; 用户明确同意时才能下单。
+**何时调工具**: 用户明确想喝咖啡 / 点单 / 找门店 / 查菜单 / 查订单时再调; 日常闲聊就照角色平时聊。可用工具来自瑞幸官方 (open.lkcoffee.com) 的点单 MCP。
 
-**关于卡片 (重要)**: 工具结果前端会自动渲染成卡片 (菜单卡 / 门店卡 / 地址卡 / 订单卡 / 券卡), 商品名、价格、图片用户都能直接看到。你的文字部分**只负责"角色味儿"**: 推荐时说"这个看着不错" / 调侃 / 关心。不要复读菜单, 不要画 markdown 表格, 不要列编码列价格 (卡片已显示)。也别说"菜单拉出来啦请选购"那种客服腔。
+**关于卡片**: 工具结果前端会自动渲染成卡片 (门店卡 / 商品卡 / 订单卡), 商品名、价格、图片用户都能看到。你的文字部分**只负责"角色味儿"**, 不要复读菜单 / 不要画 markdown 表格 / 不要列编码价格。
 
-**真实数据 / 报错**: 工具数据是实时的, 按返回内容说话, 别自己编商品和价格。工具报错就如实告诉用户原因, 给个下一步建议 (重试 / 换门店 / 检查 token)。
+**真实数据 / 报错**: 数据是实时的, 按返回内容说话, 别编。报错就如实说原因 + 下一步建议。
 
-**下单前**: 口语化念一下清单 (商品、规格、数量、取餐方式、门店/地址、合计), 等 TA 说"好 / 嗯 / 下吧"再继续。
+**下单前**: 口语化念一下清单 (商品、规格、数量、门店、合计), 等 TA 说"好 / 嗯 / 下吧"再 createOrder。
 
 ---
 
-# 通用下单工作流 (调到了再看)
+# 真实下单工作流 (调到了再看)
 
-1. **选门店**: 自提先查附近门店拿门店标识; 配送先选/查收货地址。
-2. **拉菜单**: 查商品列表, 拿到每个商品的 code/规格。后续加购、算价、下单的商品标识都从这里来, **不要凭印象编 code**。
-3. **规格**: 瑞幸饮品常有规格 (冷/热、糖度、加料、杯型), 下单前按工具 schema 把规格选项带齐, 缺了上游可能拒单。
-4. **算价/确认**: 下单前先确认金额、优惠券是否生效。
-5. **下单**: 用户明确同意后再调下单工具。
-6. 工具报"空结果"多半是参数错 (门店标识 / 商品 code / 规格 不匹配): 先排查参数, 再换门店重试。
+瑞幸 MCP 共 8 个工具:
+1. **queryShopList** { deptName?, longitude, latitude } —— 按经纬度查门店, 返回 data[]，每项有 **deptId**(门店ID)、deptName、address、distance(千米)。**经纬度必填**: 没有就先问用户在哪 / 让用户在小程序里授权定位, 不要编经纬度。
+2. **searchProductForMcp** { deptId, query } —— 按关键词搜商品 (瑞幸菜单是搜索式, 不是拉全量)。返回 data[]，每项有 **productId** + **skuCode** + productName + estimatePrice(到手价) + initialPrice(面价) + productAttrs(规格)。后续 productId/skuCode 都从这里拿, **不要编**。
+3. **switchProduct** { deptId, productId, skuCode, attrOperationParam:{attributeId, subAttr:{attributeId, operation:3}}, amount } —— 切换规格 (冰/热、杯型、糖度等), 返回新的 skuCode + estimatePrice。换了规格 skuCode 会变, 下单用新的。
+4. **queryProductDetailInfo** { deptId, productId } —— 查商品详情 (含全部可选规格)。
+5. **previewOrder** { deptId, productList:[{amount, productId, skuCode}] } —— 下单前算价, 返回 discountPrice(实付) + couponCodeList(可用券) + productInfoList。
+6. **createOrder** { deptId, productList:[{amount, productId, skuCode}], longitude, latitude, couponCodeList? } —— 真正下单, 返回 orderId + payOrderUrl(微信支付) + payOrderQrCodeUrl(支付二维码)。**经纬度必填**(跟 queryShopList 同一组)。
+7. **queryOrderDetailInfo** { orderId } —— 查订单 (orderStatus: 10待付款/20下单成功/30制作中/60等待取餐/80已完成/100已取消, takeMealCodeInfo.code 是取餐码)。
+8. **cancelOrder** { orderId } —— 取消订单。
+
+链路: queryShopList → searchProductForMcp → (可选 switchProduct 调规格) → previewOrder → createOrder → queryOrderDetailInfo 看取餐码。
+**productId + skuCode 必须成对来自 searchProductForMcp/switchProduct 的返回, 数量 amount 是整数。**
 ---
 `;
 
-/**
- * 尾部小提醒 (注入在 messages 数组的最后, 主消息之前)。
- * 长 context 下模型注意力会衰减, 头部提示词会被中段历史挤掉, 加一道短 reminder。
- */
-export const LUCKIN_TAIL_REMINDER = `[瑞幸点单助手 ON · **永远用角色语气给一段文字回复, 别空回**; 工具结果有卡片自动展示, 别复读菜单 / 别画 markdown 表格; 下单链路: 选门店/地址 → 查菜单 → 选规格 → 算价确认 → 下单; 商品 code 必须来自查菜单的返回, 不要编; 数量用整数]`;
+/** 尾部小提醒 (注入在 messages 数组的最后, 主消息之前)。 */
+export const LUCKIN_TAIL_REMINDER = `[瑞幸点单助手 ON · **永远用角色语气给一段文字回复, 别空回**; 工具结果有卡片自动展示, 别复读菜单 / 别画 markdown 表格; 链路: queryShopList(带经纬度) → searchProductForMcp(deptId+query) → previewOrder → createOrder(带经纬度); productId+skuCode 必须成对来自搜索返回, 不要编; amount 整数; 经纬度没有就问用户别瞎编]`;
 
-// ========== 终结性工具判定 (自动结束瑞幸请求) ==========
+// ========== 终结性工具判定 (下单成功后自动结束) ==========
 
 const TERMINAL_TOOL_PATTERNS: RegExp[] = [
+    /^createOrder$/i,
     /create.*order/i,
-    /submit.*order/i,
-    /place.*order/i,
-    /confirm.*order/i,
-    /pay.*order/i,
-    /one[-_]?click[-_]?order/i,
     /下单/i,
-    /提交订单/i,
-    /创建订单/i,
 ];
 
 export const isTerminalToolCall = (toolName: string, success: boolean): boolean => {
@@ -113,27 +113,11 @@ export const isTerminalToolCall = (toolName: string, success: boolean): boolean 
 
 export type LuckinCardKind = 'menu' | 'order' | 'store' | 'coupon' | 'activity' | 'address' | 'cart' | 'generic';
 
-const MENU_PATTERNS = [
-    /menu/i, /meal/i, /drink/i, /beverage/i, /product/i, /goods/i, /sku/i, /commodit/i, /item/i,
-    /菜单/, /商品/, /饮品/, /咖啡/, /单品/, /菜品/,
-    /query.*menu/i, /query.*product/i, /query.*goods/i, /list.*product/i, /list.*goods/i, /list.*menu/i,
-    /get.*menu/i, /get.*product/i,
-];
-const STORE_PATTERNS = [/store/i, /shop/i, /门店/, /附近/, /nearby/i, /网点/];
-const ADDRESS_PATTERNS = [/address/i, /地址/, /收货/, /consignee/i, /delivery.*area/i];
-const COUPON_PATTERNS = [/coupon/i, /voucher/i, /券/, /redeem/i, /兑换/, /咖啡券/, /ticket/i];
-const ACTIVITY_PATTERNS = [/activity/i, /event/i, /campaign/i, /活动/, /promotion/i];
-const CART_PATTERNS = [/cart/i, /购物车/, /basket/i];
-const ORDER_PATTERNS = [/order/i, /下单/, /订单/, /submit/i, /place.*order/i, /create.*order/i];
-
 export const inferCardKind = (toolName: string): LuckinCardKind => {
-    if (ORDER_PATTERNS.some(p => p.test(toolName))) return 'order';
-    if (CART_PATTERNS.some(p => p.test(toolName))) return 'cart';
-    if (ADDRESS_PATTERNS.some(p => p.test(toolName))) return 'address';
-    if (MENU_PATTERNS.some(p => p.test(toolName))) return 'menu';
-    if (STORE_PATTERNS.some(p => p.test(toolName))) return 'store';
-    if (COUPON_PATTERNS.some(p => p.test(toolName))) return 'coupon';
-    if (ACTIVITY_PATTERNS.some(p => p.test(toolName))) return 'activity';
+    const t = toolName || '';
+    if (/queryShopList|shop.*list|store/i.test(t)) return 'store';
+    if (/searchProduct|switchProduct|queryProductDetail|product|商品|菜单/i.test(t)) return 'menu';
+    if (/previewOrder|createOrder|queryOrderDetail|cancelOrder|order|订单|下单/i.test(t)) return 'order';
     return 'generic';
 };
 
@@ -170,15 +154,13 @@ export const isLuckinActivatedInMessages = (messages: MsgLike[]): boolean => {
 
 export interface LuckinMiniAppSnapshot {
     open: boolean;
-    step?: 'mode' | 'pick' | 'menu' | 'review';
-    /** 1=自提/到店, 2=配送 (沿用麦当劳约定; 瑞幸真实取值待确认) */
-    orderType?: 1 | 2;
-    storeCode?: string;
+    step?: 'location' | 'store' | 'menu' | 'review';
+    deptId?: number | string;
     storeName?: string;
-    addressLabel?: string;
-    cart?: Array<{ code: string; name: string; price?: any; qty: number; spec?: string }>;
-    /** 当前门店菜单 (code → {name, price}) */
-    menuItems?: Record<string, { name?: string; price?: string; spec?: string }>;
+    /** 购物车 (code = skuCode) */
+    cart?: Array<{ code: string; productId?: number | string; name: string; price?: any; qty: number; spec?: string }>;
+    /** 已搜到的商品 (skuCode → {name, price, productId}) */
+    menuItems?: Record<string, { name?: string; price?: string | number; productId?: number | string; spec?: string }>;
 }
 
 /**
@@ -189,7 +171,7 @@ export const LUCKIN_PROPOSE_TOOL = {
     type: 'function' as const,
     function: {
         name: 'propose_cart_items',
-        description: '当你想给用户推荐 1~N 杯饮品/商品加进购物车时调用这工具。用户会在小程序聊天里看到一张"char 想加这些"小卡片, 每项带"+ 加进购物车"按钮自己决定。这不是真下单, 只是把推荐推到 UI。\n\n**前置硬条件**: 必须等到 system prompt 里出现"当前门店在售"清单后再调; 用户还在选模式 / 选门店阶段时菜单没加载, 任何 code 都是凭印象编的, 会被拒。这种时候用文字陪聊就好。',
+        description: '当你想给用户推荐 1~N 杯饮品/商品加进购物车时调用这工具。用户会在小程序聊天里看到一张"char 想加这些"小卡片, 每项带"+ 加进购物车"按钮自己决定。这不是真下单。\n\n**前置硬条件**: 必须等到 system prompt 里出现"当前已搜到的商品"清单后再调; 用户还没搜过商品时菜单是空的, 任何 code 都是凭印象编的, 会被拒。这种时候用文字陪聊, 或者建议用户搜个关键词。',
         parameters: {
             type: 'object',
             properties: {
@@ -199,7 +181,7 @@ export const LUCKIN_PROPOSE_TOOL = {
                     items: {
                         type: 'object',
                         properties: {
-                            code: { type: 'string', description: '商品 code, **必须**是当前 system prompt 里"当前门店在售"清单 = 号左边那串。**绝对不能**用商品名当 code, 也不能用印象中/别店的 code。' },
+                            code: { type: 'string', description: '商品 skuCode, **必须**是当前 system prompt 里"当前已搜到的商品"清单 = 号左边那串 (形如 SP9636-00001)。**绝对不能**用商品名当 code。' },
                             name: { type: 'string', description: '商品名 (跟菜单一致)' },
                             qty: { type: 'integer', description: '推荐数量', minimum: 1, maximum: 10 },
                             reason: { type: 'string', description: '一句话说为什么推这个 (口味/搭配/划算), 30 字内' }
@@ -216,11 +198,11 @@ export const LUCKIN_PROPOSE_TOOL = {
 };
 
 /**
- * 把 char 在 propose_cart_items 里塞的 items 里所有 code 按菜单校准 (完全匹配 → 子串匹配)。
+ * 把 char 在 propose_cart_items 里塞的 items 里所有 code 按菜单(skuCode 字典)校准。
  */
 export const autoFixProposalCodesByName = (
     items: any[],
-    menuItems: Record<string, { name?: string; price?: string }> | undefined
+    menuItems: Record<string, { name?: string; price?: string | number }> | undefined
 ): { fixed: any[]; fixes: Array<{ from: string; to: string; name: string }> } => {
     const fixes: Array<{ from: string; to: string; name: string }> = [];
     if (!items?.length || !menuItems || !Object.keys(menuItems).length) {
@@ -269,17 +251,19 @@ export const buildLuckinMiniAppContextBlock = (snap?: LuckinMiniAppSnapshot, use
     lines.push(`[瑞幸协同点单 — ${userName} 现在打开了瑞幸小程序, 跟你一起选]`);
     lines.push('');
     lines.push('# 当前状态 (实时)');
-    lines.push(`- 步骤: ${snap.step === 'mode' ? '选模式' : snap.step === 'pick' ? '选地址/门店' : snap.step === 'menu' ? '浏览菜单' : snap.step === 'review' ? '确认订单' : '?'}`);
-    if (snap.orderType) lines.push(`- 取餐方式: ${snap.orderType === 1 ? '到店自提' : '外卖配送'}`);
-    if (snap.storeName || snap.storeCode) lines.push(`- 门店: ${snap.storeName || snap.storeCode}`);
-    if (snap.addressLabel) lines.push(`- 收货地址: ${snap.addressLabel}`);
+    const stepLabel = snap.step === 'location' ? '定位中'
+        : snap.step === 'store' ? '选门店'
+        : snap.step === 'menu' ? '搜商品/浏览'
+        : snap.step === 'review' ? '确认订单' : '?';
+    lines.push(`- 步骤: ${stepLabel}`);
+    if (snap.storeName || snap.deptId) lines.push(`- 门店: ${snap.storeName || snap.deptId}${snap.deptId ? ` (deptId=${snap.deptId})` : ''}`);
     const cart = snap.cart || [];
     if (cart.length) {
         const total = cart.reduce((s, l) => {
             const p = typeof l.price === 'string' ? parseFloat(l.price) : (typeof l.price === 'number' ? l.price : 0);
             return s + (isFinite(p) ? p * l.qty : 0);
         }, 0);
-        lines.push(`- 购物车 (${cart.length} 项, 合计 ¥${total.toFixed(2)}):`);
+        lines.push(`- 购物车 (${cart.length} 项, 合计约 ¥${total.toFixed(2)}):`);
         for (const l of cart) {
             const p = typeof l.price === 'string' ? parseFloat(l.price) : (typeof l.price === 'number' ? l.price : 0);
             lines.push(`    · ${l.name}${l.spec ? ` (${l.spec})` : ''} ×${l.qty}${isFinite(p) && p > 0 ? ` (¥${p.toFixed(2)}/份)` : ''}`);
@@ -291,17 +275,17 @@ export const buildLuckinMiniAppContextBlock = (snap?: LuckinMiniAppSnapshot, use
 
     const menuLoaded = !!(snap.menuItems && Object.keys(snap.menuItems).length);
     if (!menuLoaded) {
-        lines.push(`# 当前菜单: ❌ 还没加载 (用户还在选模式 / 选门店阶段)`);
-        lines.push(`**这一阶段不要调 propose_cart_items**: 没有菜单字典, 你 propose 出去的任何 code 都会被拒。陪用户选门店就好, 文字回应即可; 等进入菜单页、system prompt 里出现"当前门店在售"清单后再说推荐。`);
+        lines.push(`# 当前已搜到的商品: ❌ 还没搜 (用户还在定位 / 选门店, 或还没搜关键词)`);
+        lines.push(`**这一阶段不要调 propose_cart_items**: 没有商品字典, 你 propose 出去的任何 code 都会被拒。可以建议用户搜个关键词 (如"拿铁"/"美式"/"生椰"), 等"当前已搜到的商品"清单出来后再推荐。`);
         lines.push('');
     } else {
         const entries = Object.entries(snap.menuItems!).filter(([, m]: any) => m?.name).slice(0, 120);
-        lines.push(`# 当前门店在售 (前 ${entries.length} 项, 推荐时从这里挑)`);
-        lines.push('格式: `code=商品名 ¥价格` ← propose_cart_items 的 code 字段必须用这里的 code (= 号左边那串), 不要用商品名');
+        lines.push(`# 当前已搜到的商品 (${entries.length} 项, 推荐时从这里挑)`);
+        lines.push('格式: `skuCode=商品名 ¥到手价` ← propose_cart_items 的 code 字段必须用这里的 skuCode (= 号左边那串, 形如 SP9636-00001), 不要用商品名');
         for (const [code, m] of entries) {
             const v = m as any;
             if (!v?.name) continue;
-            lines.push(`- ${code}=${v.name}${v.price ? ` ¥${v.price}` : ''}`);
+            lines.push(`- ${code}=${v.name}${v.price != null ? ` ¥${v.price}` : ''}`);
         }
         lines.push('');
     }
@@ -309,7 +293,7 @@ export const buildLuckinMiniAppContextBlock = (snap?: LuckinMiniAppSnapshot, use
     lines.push(`# 协同规则 (这段优先级高于其它通用规则)`);
     lines.push(`- ${userName} 在小程序里跟你聊"喝啥 / 帮我挑 / 这个怎么样", 你按平时人设自然回应。`);
     lines.push(`- 真要推荐具体商品时, **优先调 \`propose_cart_items\` 工具**把推荐推到 UI (用户会看到 "+ 加进购物车" 卡片自己决定)。`);
-    lines.push(`- **propose 工具的 code 必须是菜单字典里的 key**, **绝对不能把商品名当 code 传**。code 错了用户加不到购物车。如果你不确定 code, 宁可不推。`);
+    lines.push(`- **propose 工具的 code 必须是上面清单里的 skuCode**, **绝对不能把商品名当 code 传**。code 错了用户加不到购物车。如果你不确定 code, 宁可不推、或建议用户先搜一下。`);
     lines.push(`- 工具调用后**还可以继续聊**, 解释为啥推这些 / 调侃几句, 这是文字部分, 不要再复读商品名 (卡片里已显示)。`);
     lines.push(`- **不要画 markdown 表格 / 不要贴 code**, 那些信息小程序界面已经在显示。`);
     lines.push(`- **你不能直接改购物车 / 不能直接下单**, 工具只是推送建议, 加减、敲定都要 ${userName} 在小程序里自己点。`);
@@ -317,15 +301,14 @@ export const buildLuckinMiniAppContextBlock = (snap?: LuckinMiniAppSnapshot, use
     return lines.join('\n');
 };
 
-// ========== 会话状态沉淀 (关键词驱动, 不依赖精确工具名) ==========
+// ========== 会话状态沉淀 (真实工具名/字段) ==========
 
 interface LuckinSessionState {
-    storeCode?: string;
+    deptId?: number | string;
     storeName?: string;
-    orderType?: 1 | 2;
-    addressId?: string;
-    addressLabel?: string;
-    knownProductCodes: Array<{ code: string; name?: string; price?: string | number }>;
+    longitude?: number;
+    latitude?: number;
+    knownProducts: Array<{ skuCode: string; productId?: number | string; name?: string; price?: string | number }>;
     lastOrderId?: string;
 }
 
@@ -339,34 +322,25 @@ const pickStr = (obj: any, keys: string[]): string | undefined => {
     return undefined;
 };
 
-/** 从一段任意结构里尽力抽出 "商品列表", 容忍 data.list / data.items / data.menu / 字典等多种形态 */
-const collectProductCodes = (result: any): Array<{ code: string; name?: string; price?: string }> => {
-    const out: Array<{ code: string; name?: string; price?: string }> = [];
-    if (!result || typeof result !== 'object') return out;
-    const pushItem = (m: any, codeHint?: string) => {
-        if (!m || typeof m !== 'object') return;
-        const code = codeHint || pickStr(m, ['code', 'productCode', 'goodsCode', 'skuCode', 'productId', 'skuId', 'goodsId', 'id']);
-        if (!code) return;
+const collectProducts = (result: any): Array<{ skuCode: string; productId?: number | string; name?: string; price?: string | number }> => {
+    const out: Array<{ skuCode: string; productId?: number | string; name?: string; price?: string | number }> = [];
+    const arr = Array.isArray(result) ? result : (Array.isArray(result?.data) ? result.data : (result && typeof result === 'object' ? [result] : []));
+    for (const m of arr) {
+        if (!m || typeof m !== 'object') continue;
+        const skuCode = pickStr(m, ['skuCode']);
+        if (!skuCode) continue;
         out.push({
-            code,
-            name: pickStr(m, ['name', 'goodsName', 'productName', 'title', 'commodityName']),
-            price: pickStr(m, ['price', 'currentPrice', 'salePrice', 'sellPrice', 'realPrice']),
+            skuCode,
+            productId: (m as any).productId,
+            name: pickStr(m, ['productName', 'name']),
+            price: (m as any).estimatePrice ?? (m as any).initialPrice ?? pickStr(m, ['price']),
         });
-    };
-    const scanArray = (arr: any[]) => { for (const m of arr) pushItem(m); };
-    const scanDict = (dict: any) => { for (const k of Object.keys(dict)) pushItem(dict[k], k); };
-    // 常见容器键
-    for (const key of ['items', 'products', 'goods', 'menu', 'menus', 'list', 'goodsList', 'skuList', 'commodities']) {
-        const v = result[key];
-        if (Array.isArray(v)) scanArray(v);
-        else if (v && typeof v === 'object') scanDict(v);
     }
-    if (Array.isArray(result)) scanArray(result);
     return out;
 };
 
 export const extractLuckinSessionState = (messages: MsgLike[]): LuckinSessionState => {
-    const state: LuckinSessionState = { knownProductCodes: [] };
+    const state: LuckinSessionState = { knownProducts: [] };
     let activateIdx = -1;
     for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
@@ -379,67 +353,41 @@ export const extractLuckinSessionState = (messages: MsgLike[]): LuckinSessionSta
     }
     if (activateIdx === -1) return state;
 
-    const seenCodes = new Set<string>();
+    const seen = new Set<string>();
     for (let i = activateIdx; i < messages.length; i++) {
         const m: any = messages[i];
         const meta = m.metadata || {};
         if (meta.luckinDeactivate) break;
         if ((m.type as string) !== 'luckin_card') continue;
-        const tool = String(meta.luckinToolName || '').toLowerCase();
+        const tool = String(meta.luckinToolName || '');
         const args = meta.luckinToolArgs || {};
         const result = meta.luckinToolResult;
         if (meta.luckinToolError || result == null) continue;
 
-        // 算价/下单的 args 里的门店/地址/取餐方式是最权威的当前决策
-        if (/calculate|price|create.*order|place.*order|submit.*order/.test(tool)) {
-            const sc = pickStr(args, ['storeCode', 'storeId', 'shopCode', 'shopId']);
-            if (sc) state.storeCode = sc;
-            const ai = pickStr(args, ['addressId']);
-            if (ai) state.addressId = ai;
-            const ot = args.orderType ?? args.deliveryMode ?? args.takeType;
-            if (ot === 1 || ot === '1') state.orderType = 1;
-            else if (ot === 2 || ot === '2') state.orderType = 2;
-        }
-
-        // 门店查询
-        if (/store|shop|门店|nearby|网点/.test(tool)) {
-            const list = Array.isArray(result) ? result : (result?.stores || result?.list || result?.shops);
+        // 门店
+        if (/queryShopList|shop|store/i.test(tool)) {
+            const list = Array.isArray(result) ? result : (result?.data || result?.list);
             const first = Array.isArray(list) ? list[0] : null;
             if (first && typeof first === 'object') {
-                if (!state.storeCode) state.storeCode = pickStr(first, ['storeCode', 'storeId', 'shopCode', 'shopId', 'code', 'id']);
-                state.storeName = state.storeName || pickStr(first, ['storeName', 'shopName', 'name']);
-                if (state.orderType == null) state.orderType = 1;
+                if (state.deptId == null) state.deptId = (first as any).deptId;
+                state.storeName = state.storeName || pickStr(first, ['deptName']);
+                if ((first as any).longitude != null) state.longitude = (first as any).longitude;
+                if ((first as any).latitude != null) state.latitude = (first as any).latitude;
+            }
+            if (args.longitude != null) state.longitude = args.longitude;
+            if (args.latitude != null) state.latitude = args.latitude;
+        }
+        // 商品搜索 / 切换 / 详情
+        if (/searchProduct|switchProduct|queryProductDetail|product/i.test(tool)) {
+            if (state.deptId == null && args.deptId != null) state.deptId = args.deptId;
+            for (const p of collectProducts(result)) {
+                if (!seen.has(p.skuCode)) { seen.add(p.skuCode); state.knownProducts.push(p); }
             }
         }
-
-        // 地址查询
-        if (/address|地址|收货/.test(tool)) {
-            const list = result?.addresses || result?.list || result;
-            const first = Array.isArray(list) ? list[0] : null;
-            if (first && typeof first === 'object') {
-                state.addressId = state.addressId || pickStr(first, ['addressId', 'id']);
-                state.addressLabel = state.addressLabel || pickStr(first, ['fullAddress', 'address', 'detailAddress']);
-                if (state.orderType == null) state.orderType = 2;
-            }
-        }
-
-        // 菜单/商品: 累积 productCode
-        if (/menu|product|goods|商品|菜单|饮品|sku|item/.test(tool)) {
-            if (!state.storeCode) {
-                const sc = pickStr(args, ['storeCode', 'storeId', 'shopCode', 'shopId']);
-                if (sc) state.storeCode = sc;
-            }
-            for (const c of collectProductCodes(result)) {
-                if (!seenCodes.has(c.code)) {
-                    seenCodes.add(c.code);
-                    state.knownProductCodes.push(c);
-                }
-            }
-        }
-
-        // 下单成功 → orderId
-        if (/create.*order|place.*order|submit.*order|下单/.test(tool)) {
-            const oid = pickStr(result, ['orderId', 'orderNo', 'orderCode']) || pickStr(result?.orderDetail, ['orderId', 'orderNo']);
+        // 下单
+        if (/createOrder|create.*order/i.test(tool)) {
+            if (state.deptId == null && args.deptId != null) state.deptId = args.deptId;
+            const oid = pickStr(result, ['orderIdStr', 'orderId']);
             if (oid) state.lastOrderId = oid;
         }
     }
@@ -448,25 +396,22 @@ export const extractLuckinSessionState = (messages: MsgLike[]): LuckinSessionSta
 
 export const buildLuckinSessionContextPrompt = (state: LuckinSessionState): string => {
     const lines: string[] = [];
-    if (state.orderType) {
-        lines.push(`- 取餐模式: ${state.orderType === 1 ? '到店自提' : '外卖配送'}`);
+    if (state.deptId != null) {
+        lines.push(`- 当前选中门店: deptId=${state.deptId}${state.storeName ? ` (${state.storeName})` : ''}`);
     }
-    if (state.storeCode) {
-        lines.push(`- 当前选中门店: ${state.storeCode}${state.storeName ? ` (${state.storeName})` : ''}`);
-    }
-    if (state.addressId) {
-        lines.push(`- 当前选中 addressId: ${state.addressId}${state.addressLabel ? ` (${state.addressLabel})` : ''}`);
+    if (state.longitude != null && state.latitude != null) {
+        lines.push(`- 当前经纬度 (createOrder/queryShopList 复用这组): longitude=${state.longitude}, latitude=${state.latitude}`);
     }
     if (state.lastOrderId) {
         lines.push(`- 最近订单号: ${state.lastOrderId}`);
     }
-    if (state.knownProductCodes.length) {
-        const sample = state.knownProductCodes.slice(0, 30).map(p => {
-            const priceStr = p.price ? ` ¥${p.price}` : '';
-            return `${p.code}=${p.name || '?'}${priceStr}`;
+    if (state.knownProducts.length) {
+        const sample = state.knownProducts.slice(0, 30).map(p => {
+            const priceStr = p.price != null ? ` ¥${p.price}` : '';
+            return `${p.skuCode}(productId=${p.productId ?? '?'})=${p.name || '?'}${priceStr}`;
         }).join(', ');
-        const more = state.knownProductCodes.length > 30 ? ` ...还有 ${state.knownProductCodes.length - 30} 个` : '';
-        lines.push(`- 当前门店下已确认存在的商品 code (从查菜单拿到的, 下单的 code 必须从这里选, 不要编):\n  ${sample}${more}`);
+        const more = state.knownProducts.length > 30 ? ` ...还有 ${state.knownProducts.length - 30} 个` : '';
+        lines.push(`- 已搜到的商品 (下单的 productId+skuCode 必须从这里成对取, 不要编):\n  ${sample}${more}`);
     }
     if (!lines.length) return '';
     return `\n[瑞幸本轮会话已沉淀的状态 — 调工具时直接复用下面这些 ID, 不要再问用户也不要重新查]\n${lines.join('\n')}\n`;

@@ -67,9 +67,9 @@ const findArray = (obj: any, keys: string[]): any[] | null => {
 const looksLikeNamedItem = (v: any): boolean => {
     if (!v || typeof v !== 'object') return false;
     return [
-        'name', 'title', 'productName', 'goodsName', 'commodityName', 'displayName',
-        'currentPrice', 'price', 'salePrice', 'sellPrice', 'realPrice',
-        'fullAddress', 'address', 'storeName', 'shopName',
+        'name', 'title', 'productName', 'goodsName', 'commodityName', 'commodityName', 'displayName',
+        'estimatePrice', 'initialPrice', 'currentPrice', 'price', 'salePrice', 'sellPrice', 'realPrice',
+        'fullAddress', 'address', 'storeName', 'shopName', 'deptName', 'skuCode',
     ].some(k => v[k] != null);
 };
 
@@ -116,9 +116,10 @@ interface MenuItemRowProps {
 
 const MenuItemRow: React.FC<MenuItemRowProps> = ({ item, qty, onAdd, onSub, onCandidate }) => {
     const name = pickFirst<string>(item, ['name', 'productName', 'title', 'goodsName', 'commodityName', 'displayName']) || '瑞幸商品';
-    const desc = pickFirst<string>(item, ['description', 'desc', 'subtitle', 'shortDesc', 'remark']);
-    const price = pickFirst<any>(item, ['currentPrice', 'price', 'salePrice', 'memberPrice', 'realPrice', 'amount', 'sellPrice']);
-    const image = pickFirst<string>(item, ['image', 'imageUrl', 'pic', 'picUrl', 'img', 'icon', 'thumbnail', 'productImage']);
+    const desc = pickFirst<string>(item, ['additionDesc', 'description', 'desc', 'subtitle', 'shortDesc', 'remark']);
+    const price = pickFirst<any>(item, ['estimatePrice', 'estimateTotalPrice', 'currentPrice', 'price', 'salePrice', 'memberPrice', 'realPrice', 'sellPrice', 'initPrice', 'initialPrice']);
+    const image = pickFirst<string>(item, ['pictureUrl', 'breviaryPicUrl', 'bigPicUrl', 'image', 'imageUrl', 'pic', 'picUrl', 'img', 'icon', 'thumbnail', 'productImage']);
+    const tags: string[] = Array.isArray((item as any).tags) ? (item as any).tags : [];
     const showStepper = !!onAdd || !!onSub;
     const q = qty || 0;
     return (
@@ -133,6 +134,13 @@ const MenuItemRow: React.FC<MenuItemRowProps> = ({ item, qty, onAdd, onSub, onCa
             <div className="flex-1 min-w-0">
                 <div className="font-bold text-[12px] text-slate-800 truncate">{name}</div>
                 {desc && <div className="text-[10px] text-slate-500 line-clamp-2 leading-snug mt-0.5">{desc}</div>}
+                {tags.length > 0 && (
+                    <div className="flex gap-1 mt-0.5 flex-wrap">
+                        {tags.slice(0, 2).map((t, j) => (
+                            <span key={j} className="text-[9px] px-1 py-px rounded bg-blue-100 text-blue-600">{t}</span>
+                        ))}
+                    </div>
+                )}
                 <div className="flex items-center justify-between mt-1 gap-2">
                     {price != null
                         ? <div className="text-[12px] font-bold text-blue-700">{fmtMoney(price)}</div>
@@ -172,13 +180,14 @@ const MenuItemRow: React.FC<MenuItemRowProps> = ({ item, qty, onAdd, onSub, onCa
 // ========== 子卡片: 订单 ==========
 
 const OrderSummary: React.FC<{ data: any }> = ({ data }) => {
-    const orderId = pickFirst<string>(data, ['orderId', 'orderNo', 'id', 'orderSn', 'tradeNo', 'orderCode']);
-    const total = pickFirst<any>(data, ['totalAmount', 'total', 'amount', 'payAmount', 'realPayAmount']);
-    const status = pickFirst<string>(data, ['status', 'statusText', 'orderStatus', 'state']);
-    const deliveryType = pickFirst<string>(data, ['deliveryType', 'orderType', 'channel', 'takeType']);
-    const address = pickFirst<string>(data, ['address', 'deliveryAddress', 'consigneeAddress']);
-    const payUrl = pickFirst<string>(data, ['payUrl', 'paymentUrl', 'cashierUrl', 'h5Url']);
-    const items = findArray(data, ['items', 'goods', 'products', 'orderItems', 'goodsList']);
+    const orderId = pickFirst<string>(data, ['orderIdStr', 'orderId', 'orderNo', 'id', 'orderSn', 'tradeNo', 'orderCode']);
+    const total = pickFirst<any>(data, ['discountPrice', 'orderPayAmount', 'totalAmount', 'total', 'amount', 'payAmount', 'realPayAmount']);
+    const status = pickFirst<string>(data, ['orderStatusName', 'status', 'statusText', 'state']);
+    const takeCode = (data?.takeMealCodeInfo && pickFirst<string>(data.takeMealCodeInfo, ['code'])) || undefined;
+    const address = pickFirst<string>(data?.shopInfo || data, ['address', 'deptName', 'deliveryAddress']);
+    const payUrl = pickFirst<string>(data, ['payOrderUrl', 'payUrl', 'paymentUrl', 'cashierUrl', 'h5Url']);
+    const qrUrl = pickFirst<string>(data, ['payOrderQrCodeUrl']);
+    const items = findArray(data, ['orderCommodityList', 'productInfoList', 'items', 'goods', 'products', 'orderItems', 'goodsList']);
     return (
         <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -186,7 +195,6 @@ const OrderSummary: React.FC<{ data: any }> = ({ data }) => {
                 {status && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-bold">{status}</span>}
             </div>
             {orderId && <div className="text-[11px] text-slate-500 font-mono">#{orderId}</div>}
-            {deliveryType && <div className="text-[10px] text-slate-500">{deliveryType}</div>}
             {address && <div className="text-[10px] text-slate-500 line-clamp-2">📍 {address}</div>}
             {items && items.length > 0 && (
                 <div className="bg-white/70 rounded-lg overflow-hidden border border-blue-100">
@@ -200,8 +208,14 @@ const OrderSummary: React.FC<{ data: any }> = ({ data }) => {
                     <span className="text-[14px] font-bold text-blue-700">{fmtMoney(total)}</span>
                 </div>
             )}
-            {payUrl && (
-                <a href={payUrl} target="_blank" rel="noreferrer" className="block text-center mt-1 px-3 py-1.5 bg-blue-600 text-white text-[11px] font-bold rounded-lg active:scale-95 transition-transform">去支付 →</a>
+            {takeCode && takeCode !== '生成中' && (
+                <div className="flex items-center justify-between bg-blue-50 rounded-lg px-2 py-1.5 border border-blue-100">
+                    <span className="text-[11px] text-slate-600">取餐码</span>
+                    <span className="text-[15px] font-black tracking-widest text-blue-700">{takeCode}</span>
+                </div>
+            )}
+            {(payUrl || qrUrl) && (
+                <a href={payUrl || qrUrl} target="_blank" rel="noreferrer" className="block text-center mt-1 px-3 py-1.5 bg-blue-600 text-white text-[11px] font-bold rounded-lg active:scale-95 transition-transform">去支付 →</a>
             )}
         </div>
     );
@@ -216,14 +230,15 @@ const StoreList: React.FC<{ data: any }> = ({ data }) => {
         <div className="space-y-1.5">
             <div className="text-[10px] text-blue-700/70 font-bold uppercase">附近门店</div>
             {stores.slice(0, 5).map((s, i) => {
-                const name = pickFirst<string>(s, ['name', 'storeName', 'shopName']) || '瑞幸门店';
+                const name = pickFirst<string>(s, ['deptName', 'name', 'storeName', 'shopName']) || '瑞幸门店';
                 const addr = pickFirst<string>(s, ['address', 'storeAddress', 'shopAddress']);
+                // 瑞幸 distance 单位是千米 (number, 如 8.2038)
                 const distance = pickFirst<any>(s, ['distance', 'distanceM']);
                 return (
                     <div key={i} className="bg-white/70 rounded-lg p-2 border border-blue-100">
                         <div className="flex items-center justify-between">
                             <div className="font-bold text-[12px] text-slate-800 truncate">{name}</div>
-                            {distance != null && <div className="text-[10px] text-blue-700 shrink-0 ml-2">📍 {typeof distance === 'number' ? (distance > 1000 ? (distance / 1000).toFixed(1) + 'km' : distance + 'm') : distance}</div>}
+                            {distance != null && <div className="text-[10px] text-blue-700 shrink-0 ml-2">📍 {typeof distance === 'number' ? `${distance.toFixed(1)}km` : distance}</div>}
                         </div>
                         {addr && <div className="text-[10px] text-slate-500 line-clamp-2 mt-0.5">{addr}</div>}
                     </div>
@@ -241,10 +256,10 @@ const itemKey = (item: any, idx: number): string => {
 };
 
 const itemToCart = (item: any): LuckinCartItem => ({
-    code: pickFirst<string>(item, ['code', 'productCode', 'skuCode', 'goodsCode', 'productId', 'skuId', 'goodsId']),
+    code: pickFirst<string>(item, ['skuCode', 'code', 'productCode', 'goodsCode']),
     name: pickFirst<string>(item, ['name', 'productName', 'title', 'goodsName', 'commodityName', 'displayName']) || '瑞幸商品',
-    price: pickFirst<any>(item, ['currentPrice', 'price', 'salePrice', 'memberPrice', 'realPrice', 'sellPrice']),
-    image: pickFirst<string>(item, ['image', 'imageUrl', 'pic', 'picUrl', 'img', 'icon', 'thumbnail', 'productImage']),
+    price: pickFirst<any>(item, ['estimatePrice', 'currentPrice', 'price', 'salePrice', 'memberPrice', 'realPrice', 'sellPrice', 'initialPrice']),
+    image: pickFirst<string>(item, ['pictureUrl', 'breviaryPicUrl', 'bigPicUrl', 'image', 'imageUrl', 'pic', 'picUrl', 'img', 'icon', 'thumbnail', 'productImage']),
     qty: 1,
 });
 

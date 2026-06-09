@@ -1,18 +1,24 @@
 /**
- * 瑞幸小程序 (Phase 1) — 与 McdMiniApp 同构
+ * 瑞幸小程序 (按真实官方 MCP 文档实现)
  *
- * 纯按钮驱动的点单壳: 选模式 → 拉地址/门店 → 拉菜单 → 加购 → 算价 → 下单。
- * 全程直接调 callLuckinTool, 不经过 LLM, 不会有 productCode 幻觉。
+ * 纯按钮驱动的点单壳, 全程直接调 callLuckinTool, 不经过 LLM。
  *
- * ⚠️ 瑞幸真实工具名/字段暂未跑通 tools/list 确认。本组件用 **语义动作解析器**
- *    (resolveTool) 从 listLuckinTools() 拿到的真实清单里按关键词挑工具, 因此不
- *    硬编码工具名 —— 不管瑞幸叫 query-menu 还是 query-products 都能命中。等你填上
- *    token、控制台打出真实工具清单后, 如果某个动作没解析对, 只需在 ACTION_KEYWORDS
- *    里把对应关键词收紧成精确名即可。数据形态用通用提取 (容忍 list/dict/嵌套)。
+ * 真实工具 (open.lkcoffee.com, 共 8 个):
+ *   queryShopList(deptName?, longitude*, latitude*)  —— 按经纬度查门店
+ *   searchProductForMcp(deptId*, query*)             —— 关键词搜商品 (瑞幸菜单是搜索式)
+ *   switchProduct(deptId, productId, skuCode, attrOperationParam, amount) —— 切规格 (冰/热/杯型...)
+ *   queryProductDetailInfo(deptId*, productId*)
+ *   previewOrder(deptId*, productList*)              —— 算价 + 可用券
+ *   createOrder(deptId*, productList*, longitude*, latitude*, couponCodeList?) —— 下单, 返回支付链接/二维码
+ *   queryOrderDetailInfo(orderId*)                   —— 取餐码
+ *   cancelOrder(orderId*)
+ *
+ * 流程: 定位 → 选门店 → 搜商品(可切规格) → 加购 → 算价确认 → 下单 → 取餐码
+ * 瑞幸没有"收货地址/配送模式": 门店按经纬度查, 下单也带经纬度 (取餐码自提模式)。
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { callLuckinTool, isLuckinConfigured, listLuckinTools, LuckinToolDef } from '../../utils/luckinMcpClient';
+import { callLuckinTool, isLuckinConfigured } from '../../utils/luckinMcpClient';
 import { autoFixProposalCodesByName } from '../../utils/luckinToolBridge';
 import { luckinItemEmoji } from '../../utils/luckinEmoji';
 
@@ -29,60 +35,40 @@ interface LuckinMiniAppProps {
 }
 
 interface CartLine {
-    code: string;
+    code: string;            // skuCode
+    productId: number | string;
     name: string;
-    price?: string | number;
+    price?: string | number; // estimatePrice
     qty: number;
-    spec?: string;
+    spec?: string;           // 规格描述 (如 "冰 / 超大杯")
 }
 
 interface OrderContext {
-    orderType: 1 | 2; // 1=到店自提, 2=外卖配送
-    storeCode: string;
+    deptId: number | string;
     storeName?: string;
-    addressId?: string;
-    addressLabel?: string;
+    longitude: number;
+    latitude: number;
 }
 
-type Step = 'mode' | 'pick' | 'menu' | 'review' | 'success';
+type Step = 'location' | 'store' | 'menu' | 'review' | 'success';
 
-// ========== 语义动作 → 实际工具名解析 ==========
-// 调用方用语义动作 (listStores / listMenu / ...), 解析器从真实工具清单挑名字。
-const ACTION_KEYWORDS: Record<string, RegExp[]> = {
-    listStores: [/nearby.*store|store.*nearby/i, /query.*store|query.*shop/i, /list.*store|list.*shop/i, /门店|网点/, /store|shop/i],
-    listAddresses: [/query.*address|list.*address/i, /address/i, /地址|收货/],
-    listMenu: [/query.*menu|query.*product|query.*goods/i, /list.*menu|list.*product|list.*goods/i, /menu|product|goods/i, /菜单|商品|饮品/],
-    calcPrice: [/calc.*price|price.*calc/i, /preview.*order|order.*preview/i, /trial|预览|试算|计价|算价/i],
-    createOrder: [/one.*click.*order/i, /create.*order|place.*order|submit.*order/i, /下单|创建订单|提交订单/],
-    listCoupons: [/store.*coupon|coupon.*store/i, /query.*coupon|list.*coupon/i, /coupon|券/i, /ticket/i],
-};
+// 常用城市经纬度 (定位失败时手选, 省得手输)
+const CITY_PRESETS: Array<{ name: string; lng: number; lat: number }> = [
+    { name: '北京', lng: 116.407, lat: 39.904 },
+    { name: '上海', lng: 121.473, lat: 31.230 },
+    { name: '广州', lng: 113.264, lat: 23.129 },
+    { name: '深圳', lng: 114.057, lat: 22.543 },
+    { name: '杭州', lng: 120.155, lat: 30.274 },
+    { name: '成都', lng: 104.066, lat: 30.572 },
+];
 
-const resolveTool = (tools: LuckinToolDef[], action: keyof typeof ACTION_KEYWORDS): string | null => {
-    const names = tools.map(t => t.name);
-    for (const re of ACTION_KEYWORDS[action]) {
-        const hit = names.find(n => re.test(n));
-        if (hit) return hit;
-    }
-    return null;
-};
+// ========== 通用辅助 ==========
 
-// 通用: 从任意结构里尽力抽出一个"列表"
-const asList = (data: any, prefKeys: string[]): any[] => {
-    if (!data) return [];
-    if (Array.isArray(data)) return data;
-    if (typeof data !== 'object') return [];
-    for (const k of prefKeys) {
-        const v = data[k];
-        if (Array.isArray(v)) return v;
-    }
-    // dict-of-objects → values
-    const vals = Object.values(data).filter(x => x && typeof x === 'object' && !Array.isArray(x));
-    if (vals.length) return vals as any[];
-    // 兜底: 第一个数组字段
-    for (const k of Object.keys(data)) {
-        if (Array.isArray(data[k])) return data[k];
-    }
-    return [];
+const fmtMoney = (v: any): string => {
+    if (v == null) return '';
+    const n = typeof v === 'string' ? parseFloat(v) : v;
+    if (!isFinite(n)) return String(v);
+    return `¥${n.toFixed(2)}`;
 };
 
 const pick = (obj: any, keys: string[]): any => {
@@ -91,19 +77,23 @@ const pick = (obj: any, keys: string[]): any => {
     return undefined;
 };
 
-const CODE_KEYS = ['code', 'productCode', 'goodsCode', 'skuCode', 'productId', 'skuId', 'goodsId', 'id'];
-const NAME_KEYS = ['name', 'productName', 'goodsName', 'commodityName', 'title', 'displayName'];
-const PRICE_KEYS = ['currentPrice', 'price', 'salePrice', 'sellPrice', 'realPrice', 'memberPrice'];
-const STORE_CODE_KEYS = ['storeCode', 'storeId', 'shopCode', 'shopId', 'code', 'id'];
-const STORE_NAME_KEYS = ['storeName', 'shopName', 'name'];
+const asList = (data: any): any[] => {
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.data)) return data.data;
+    if (Array.isArray(data?.list)) return data.list;
+    return [];
+};
 
-// ========== 通用 UI ==========
-
-const fmtMoney = (v: any): string => {
-    if (v == null) return '';
-    const n = typeof v === 'string' ? parseFloat(v) : v;
-    if (!isFinite(n)) return String(v);
-    return `¥${n.toFixed(2)}`;
+// 从 productAttrs 里拼出"已选规格"描述 (如 "冰 / 超大杯")
+const buildSpecDesc = (productAttrs: any[]): string => {
+    if (!Array.isArray(productAttrs)) return '';
+    const parts: string[] = [];
+    for (const g of productAttrs) {
+        const sub = Array.isArray(g?.productSubAttrs) ? g.productSubAttrs.find((s: any) => s?.selected) : null;
+        if (sub?.attributeName) parts.push(sub.attributeName);
+    }
+    return parts.join(' / ');
 };
 
 const Spinner: React.FC<{ label?: string }> = ({ label }) => (
@@ -123,182 +113,78 @@ const ErrorBox: React.FC<{ msg: string; onRetry?: () => void }> = ({ msg, onRetr
     </div>
 );
 
-// ========== Step 1: 选模式 ==========
+// ========== Step 1: 定位 ==========
 
-const ModeStep: React.FC<{ onPick: (t: 1 | 2) => void }> = ({ onPick }) => (
-    <div className="px-4 py-6 space-y-3">
-        <div className="text-[20px] font-bold text-blue-900 text-center mb-1">☕ 想怎么喝？</div>
-        <div className="text-[12px] text-blue-800/70 text-center mb-4">瑞幸官方 MCP · 点完会让 ta 给点意见</div>
-        <button
-            onClick={() => onPick(2)}
-            className="w-full p-4 rounded-2xl bg-gradient-to-br from-blue-100 to-sky-100 border-2 border-blue-300 active:scale-[0.98] transition-transform text-left"
-        >
-            <div className="flex items-center gap-3">
-                <span className="text-3xl">🛵</span>
-                <div className="flex-1">
-                    <div className="text-[15px] font-bold text-blue-900">外卖配送</div>
-                    <div className="text-[11px] text-blue-800/70 mt-0.5">从已存的收货地址里选一个</div>
-                </div>
-                <span className="text-blue-700 text-xl">›</span>
-            </div>
-        </button>
-        <button
-            onClick={() => onPick(1)}
-            className="w-full p-4 rounded-2xl bg-gradient-to-br from-sky-50 to-blue-50 border-2 border-blue-200 active:scale-[0.98] transition-transform text-left"
-        >
-            <div className="flex items-center gap-3">
-                <span className="text-3xl">🏪</span>
-                <div className="flex-1">
-                    <div className="text-[15px] font-bold text-blue-900">到店自提</div>
-                    <div className="text-[11px] text-blue-800/70 mt-0.5">从附近门店里选一家</div>
-                </div>
-                <span className="text-blue-700 text-xl">›</span>
-            </div>
-        </button>
-    </div>
-);
-
-// ========== Step 2: 选地址 / 门店 ==========
-
-const PickStep: React.FC<{ tools: LuckinToolDef[]; orderType: 1 | 2; onPick: (ctx: OrderContext) => void; onBack: () => void }> = ({ tools, orderType, onPick, onBack }) => {
-    const [loading, setLoading] = useState(true);
+const LocationStep: React.FC<{ onPick: (lng: number, lat: number) => void }> = ({ onPick }) => {
+    const [locating, setLocating] = useState(false);
     const [err, setErr] = useState<string | null>(null);
-    const [addresses, setAddresses] = useState<any[]>([]);
-    const [stores, setStores] = useState<any[]>([]);
+    const [lng, setLng] = useState('');
+    const [lat, setLat] = useState('');
 
-    const reload = async () => {
-        setLoading(true); setErr(null);
-        try {
-            if (orderType === 2) {
-                const tool = resolveTool(tools, 'listAddresses');
-                if (!tool) throw new Error('没在瑞幸工具清单里找到"查地址"工具。可在控制台看 tools/list 实际工具名后调整 ACTION_KEYWORDS。');
-                const r = await callLuckinTool(tool, {});
-                if (!r.success) throw new Error(r.error || '拉取地址失败');
-                setAddresses(asList(r.data, ['addresses', 'addressList', 'list', 'data', 'items']));
-            } else {
-                const tool = resolveTool(tools, 'listStores');
-                if (!tool) throw new Error('没在瑞幸工具清单里找到"查门店"工具。可在控制台看 tools/list 实际工具名后调整 ACTION_KEYWORDS。');
-                const r = await callLuckinTool(tool, {});
-                if (!r.success) throw new Error(r.error || '拉取门店失败');
-                setStores(asList(r.data, ['stores', 'shops', 'storeList', 'shopList', 'list', 'data', 'items']));
-            }
-        } catch (e: any) {
-            setErr(e?.message || String(e));
-        } finally {
-            setLoading(false);
-        }
+    const useGeo = () => {
+        if (!navigator.geolocation) { setErr('当前环境不支持定位, 请手动选城市或输入经纬度'); return; }
+        setLocating(true); setErr(null);
+        navigator.geolocation.getCurrentPosition(
+            (pos) => { setLocating(false); onPick(pos.coords.longitude, pos.coords.latitude); },
+            (e) => { setLocating(false); setErr(`定位失败: ${e.message}。可手动选城市或输入经纬度`); },
+            { enableHighAccuracy: true, timeout: 8000 }
+        );
     };
 
-    useEffect(() => { reload(); /* eslint-disable-next-line */ }, [orderType]);
-
-    if (loading) return <Spinner label={orderType === 2 ? '正在拉取你的收货地址...' : '正在拉取附近门店...'} />;
-    if (err) return <ErrorBox msg={err} onRetry={reload} />;
+    const submitManual = () => {
+        const a = parseFloat(lng), b = parseFloat(lat);
+        if (!isFinite(a) || !isFinite(b)) { setErr('经纬度格式不对'); return; }
+        onPick(a, b);
+    };
 
     return (
-        <div className="px-3 py-3 space-y-2">
-            <div className="flex items-center justify-between mb-1">
-                <button onClick={onBack} className="text-[12px] text-blue-700 active:scale-95">‹ 换模式</button>
-                <div className="text-[13px] font-bold text-blue-900">{orderType === 2 ? '选收货地址' : '选门店'}</div>
-                <div className="w-12" />
-            </div>
-            {orderType === 2 ? (
-                addresses.length === 0 ? (
-                    <div className="text-center py-8 text-[12px] text-slate-500">还没有收货地址。请先在瑞幸 App 里添加。</div>
-                ) : addresses.map((a: any, i: number) => (
-                    <button
-                        key={pick(a, ['addressId', 'id']) || i}
-                        onClick={() => onPick({
-                            orderType: 2,
-                            storeCode: pick(a, STORE_CODE_KEYS) || '',
-                            storeName: pick(a, STORE_NAME_KEYS),
-                            addressId: pick(a, ['addressId', 'id']),
-                            addressLabel: pick(a, ['fullAddress', 'address', 'detailAddress']),
-                        })}
-                        className="w-full p-3 rounded-xl bg-white border border-blue-200 active:scale-[0.99] active:bg-blue-50 transition text-left"
-                    >
-                        <div className="flex items-start gap-2">
-                            <span className="text-xl shrink-0 mt-0.5">📍</span>
-                            <div className="flex-1 min-w-0">
-                                <div className="font-bold text-[13px] text-slate-800 truncate">
-                                    {pick(a, ['contactName', 'name', 'consignee']) || '收货人'}
-                                    {pick(a, ['phone', 'mobile', 'tel']) && <span className="text-[10px] text-slate-500 font-normal ml-1.5">{pick(a, ['phone', 'mobile', 'tel'])}</span>}
-                                </div>
-                                <div className="text-[11px] text-slate-600 line-clamp-2 leading-snug mt-0.5">{pick(a, ['fullAddress', 'address', 'detailAddress'])}</div>
-                            </div>
-                            <span className="text-blue-700 text-sm shrink-0 mt-1">›</span>
-                        </div>
-                    </button>
-                ))
-            ) : (
-                stores.length === 0 ? (
-                    <div className="text-center py-8 text-[12px] text-slate-500 leading-relaxed">没找到门店。<br />确认定位/账号后重试。</div>
-                ) : stores.map((s: any, i: number) => {
-                    const distance = pick(s, ['distance', 'distanceM']);
-                    return (
-                        <button
-                            key={pick(s, STORE_CODE_KEYS) || i}
-                            onClick={() => onPick({
-                                orderType: 1,
-                                storeCode: pick(s, STORE_CODE_KEYS) || '',
-                                storeName: pick(s, STORE_NAME_KEYS),
-                            })}
-                            className="w-full p-3 rounded-xl bg-white border border-blue-200 active:scale-[0.99] active:bg-blue-50 transition text-left"
-                        >
-                            <div className="flex items-start gap-2">
-                                <span className="text-xl shrink-0 mt-0.5">🏪</span>
-                                <div className="flex-1 min-w-0">
-                                    <div className="flex items-center justify-between gap-2">
-                                        <div className="font-bold text-[13px] text-slate-800 truncate flex-1">{pick(s, STORE_NAME_KEYS) || '瑞幸门店'}</div>
-                                        {distance != null && (
-                                            <div className="text-[10px] text-blue-700 shrink-0">
-                                                {typeof distance === 'number' ? (distance > 1000 ? (distance / 1000).toFixed(1) + 'km' : distance + 'm') : distance}
-                                            </div>
-                                        )}
-                                    </div>
-                                    {pick(s, ['address', 'storeAddress', 'shopAddress']) && <div className="text-[11px] text-slate-600 line-clamp-2 leading-snug mt-0.5">{pick(s, ['address', 'storeAddress', 'shopAddress'])}</div>}
-                                </div>
-                            </div>
+        <div className="px-4 py-6 space-y-4">
+            <div className="text-[20px] font-bold text-blue-900 text-center">📍 你在哪儿？</div>
+            <div className="text-[12px] text-blue-800/70 text-center -mt-2">瑞幸按位置查附近门店</div>
+            <button onClick={useGeo} disabled={locating}
+                className="w-full p-4 rounded-2xl bg-gradient-to-br from-blue-600 to-blue-500 text-white font-bold active:scale-[0.98] transition disabled:opacity-60">
+                {locating ? '定位中…' : '📡 使用我的定位'}
+            </button>
+            {err && <div className="text-[11px] text-red-600 leading-relaxed bg-red-50 rounded-lg p-2">{err}</div>}
+            <div>
+                <div className="text-[11px] font-bold text-blue-800/70 mb-1.5">或选个城市</div>
+                <div className="grid grid-cols-3 gap-2">
+                    {CITY_PRESETS.map((c) => (
+                        <button key={c.name} onClick={() => onPick(c.lng, c.lat)}
+                            className="py-2 rounded-xl bg-white border border-blue-200 text-[12px] text-blue-700 font-bold active:scale-95 active:bg-blue-50">
+                            {c.name}
                         </button>
-                    );
-                })
-            )}
+                    ))}
+                </div>
+            </div>
+            <details className="text-[11px] text-slate-500">
+                <summary className="cursor-pointer text-blue-700">手动输入经纬度</summary>
+                <div className="flex gap-2 mt-2">
+                    <input value={lng} onChange={e => setLng(e.target.value)} placeholder="经度 lng" className="flex-1 bg-white border border-blue-200 rounded-lg px-2 py-1.5 text-[12px]" />
+                    <input value={lat} onChange={e => setLat(e.target.value)} placeholder="纬度 lat" className="flex-1 bg-white border border-blue-200 rounded-lg px-2 py-1.5 text-[12px]" />
+                    <button onClick={submitManual} className="px-3 bg-blue-600 text-white rounded-lg text-[12px] font-bold active:scale-95">查</button>
+                </div>
+            </details>
         </div>
     );
 };
 
-// ========== Step 3: 浏览菜单 + 加购 ==========
+// ========== Step 2: 选门店 ==========
 
-const MenuStep: React.FC<{
-    tools: LuckinToolDef[];
-    ctx: OrderContext;
-    cart: Map<string, CartLine>;
-    onCart: (code: string, delta: number, item?: { name: string; price?: any }) => void;
-    onMenuLoaded?: (items: Record<string, { name?: string; price?: string }>) => void;
-    onBack: () => void;
-    onReview: () => void;
-}> = ({ tools, ctx, cart, onCart, onMenuLoaded, onBack, onReview }) => {
+const StoreStep: React.FC<{ loc: { lng: number; lat: number }; onPick: (ctx: OrderContext) => void; onBack: () => void }> = ({ loc, onPick, onBack }) => {
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState<string | null>(null);
-    const [items, setItems] = useState<any[]>([]);
+    const [stores, setStores] = useState<any[]>([]);
+    const [kw, setKw] = useState('');
 
-    const reload = async () => {
+    const reload = async (deptName?: string) => {
         setLoading(true); setErr(null);
         try {
-            const tool = resolveTool(tools, 'listMenu');
-            if (!tool) throw new Error('没在瑞幸工具清单里找到"查菜单"工具。可调整 ACTION_KEYWORDS。');
-            const args: any = {};
-            if (ctx.storeCode) { args.storeCode = ctx.storeCode; args.storeId = ctx.storeCode; }
-            const r = await callLuckinTool(tool, args);
-            if (!r.success) throw new Error(r.error || '拉取菜单失败');
-            const list = asList(r.data, ['items', 'products', 'goods', 'menu', 'menus', 'list', 'goodsList', 'skuList']);
-            setItems(list);
-            // 推给父组件: code → {name, price}
-            const dict: Record<string, { name?: string; price?: string }> = {};
-            for (const it of list) {
-                const code = pick(it, CODE_KEYS);
-                if (code) dict[String(code)] = { name: pick(it, NAME_KEYS), price: pick(it, PRICE_KEYS) };
-            }
-            onMenuLoaded?.(dict);
+            const args: any = { longitude: loc.lng, latitude: loc.lat };
+            if (deptName) args.deptName = deptName;
+            const r = await callLuckinTool('queryShopList', args);
+            if (!r.success) throw new Error(r.error || '查门店失败');
+            setStores(asList(r.data));
         } catch (e: any) {
             setErr(e?.message || String(e));
         } finally {
@@ -306,7 +192,171 @@ const MenuStep: React.FC<{
         }
     };
 
-    useEffect(() => { reload(); /* eslint-disable-next-line */ }, [ctx.storeCode, ctx.orderType]);
+    useEffect(() => { reload(); /* eslint-disable-next-line */ }, [loc.lng, loc.lat]);
+
+    return (
+        <div className="flex flex-col h-full">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-blue-200/60 bg-blue-50/60">
+                <button onClick={onBack} className="text-[12px] text-blue-700 active:scale-95">‹ 换位置</button>
+                <div className="text-[13px] font-bold text-blue-900">选门店</div>
+                <div className="w-12" />
+            </div>
+            <div className="p-2 flex gap-2 border-b border-blue-100">
+                <input value={kw} onChange={e => setKw(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') reload(kw.trim() || undefined); }}
+                    placeholder="按门店名筛选 (可选)" className="flex-1 bg-white border border-blue-200 rounded-lg px-2.5 py-1.5 text-[12px]" />
+                <button onClick={() => reload(kw.trim() || undefined)} className="px-3 bg-blue-600 text-white rounded-lg text-[12px] font-bold active:scale-95">查</button>
+            </div>
+            <div className="flex-1 overflow-y-auto luckin-scroll p-2 space-y-2">
+                {loading ? <Spinner label="正在查附近门店..." />
+                : err ? <ErrorBox msg={err} onRetry={() => reload(kw.trim() || undefined)} />
+                : stores.length === 0 ? (
+                    <div className="text-center py-8 text-[12px] text-slate-500">附近没查到门店, 换个位置或门店名试试。</div>
+                ) : stores.map((s: any, i: number) => (
+                    <button key={s.deptId || i}
+                        onClick={() => onPick({ deptId: s.deptId, storeName: s.deptName, longitude: loc.lng, latitude: loc.lat })}
+                        className="w-full p-3 rounded-xl bg-white border border-blue-200 active:scale-[0.99] active:bg-blue-50 transition text-left">
+                        <div className="flex items-start gap-2">
+                            <span className="text-xl shrink-0 mt-0.5">🏪</span>
+                            <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="font-bold text-[13px] text-slate-800 truncate flex-1">{s.deptName || '瑞幸门店'}</div>
+                                    {s.distance != null && <div className="text-[10px] text-blue-700 shrink-0">{typeof s.distance === 'number' ? `${s.distance.toFixed(1)}km` : s.distance}</div>}
+                                </div>
+                                {s.address && <div className="text-[11px] text-slate-600 line-clamp-2 leading-snug mt-0.5">{s.address}</div>}
+                                {(s.workTimeStart || s.workTimeEnd) && <div className="text-[10px] text-slate-400 mt-0.5">🕒 {s.workTimeStart}–{s.workTimeEnd}</div>}
+                            </div>
+                        </div>
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+// ========== 规格切换浮层 ==========
+
+const ProductSheet: React.FC<{
+    ctx: OrderContext;
+    product: any;          // 来自 searchProductForMcp 的一项
+    onAdd: (line: { skuCode: string; productId: number | string; name: string; price?: any; spec?: string }) => void;
+    onClose: () => void;
+}> = ({ ctx, product, onAdd, onClose }) => {
+    const [working, setWorking] = useState<any>(product);
+    const [switching, setSwitching] = useState(false);
+    const [err, setErr] = useState<string | null>(null);
+
+    const doSwitch = async (groupAttrId: number, subAttrId: number) => {
+        if (switching) return;
+        setSwitching(true); setErr(null);
+        try {
+            const r = await callLuckinTool('switchProduct', {
+                deptId: ctx.deptId,
+                productId: working.productId,
+                skuCode: working.skuCode,
+                attrOperationParam: {
+                    attributeId: groupAttrId,
+                    subAttr: { attributeId: subAttrId, operation: 3 },
+                },
+                amount: 1,
+            });
+            if (!r.success) throw new Error(r.error || '切换规格失败');
+            // data 是切换后的新商品
+            setWorking(r.data || working);
+        } catch (e: any) {
+            setErr(e?.message || String(e));
+        } finally {
+            setSwitching(false);
+        }
+    };
+
+    const attrs = Array.isArray(working?.productAttrs) ? working.productAttrs : [];
+    const price = working?.estimatePrice ?? working?.initialPrice;
+
+    return (
+        <div className="fixed inset-0 z-[60] bg-black/40 flex items-end justify-center" onClick={onClose}>
+            <div className="bg-gradient-to-b from-blue-50 to-sky-50 w-full sm:max-w-md rounded-t-2xl shadow-2xl flex flex-col" style={{ maxHeight: '75vh' }} onClick={e => e.stopPropagation()}>
+                <div className="flex items-center gap-2 px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-500 rounded-t-2xl shrink-0">
+                    <div className="w-12 h-12 rounded-lg bg-white/20 overflow-hidden shrink-0 flex items-center justify-center text-2xl">
+                        {working?.pictureUrl ? <img src={working.pictureUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" onError={(e: any) => { e.target.style.display = 'none'; }} /> : luckinItemEmoji(working?.productName)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                        <div className="text-[13px] font-bold text-white truncate">{working?.productName}</div>
+                        {price != null && <div className="text-[12px] text-white/90">{fmtMoney(price)}{working?.initialPrice != null && working.initialPrice !== price && <span className="line-through text-white/50 ml-1.5 text-[10px]">{fmtMoney(working.initialPrice)}</span>}</div>}
+                    </div>
+                    <button onClick={onClose} className="w-8 h-8 rounded-full bg-white/30 flex items-center justify-center text-white active:scale-90">✕</button>
+                </div>
+                <div className="flex-1 overflow-y-auto luckin-scroll p-3 space-y-3 min-h-0">
+                    {err && <div className="text-[11px] text-red-600 bg-red-50 rounded-lg p-2">{err}</div>}
+                    {attrs.length === 0 && <div className="text-[12px] text-slate-500 text-center py-4">这个商品没有可选规格</div>}
+                    {attrs.map((g: any, gi: number) => (
+                        <div key={g.attributeId || gi}>
+                            <div className="text-[11px] font-bold text-slate-500 mb-1.5">{g.attributeName}</div>
+                            <div className="flex flex-wrap gap-2">
+                                {(g.productSubAttrs || []).map((sub: any, si: number) => {
+                                    const disabled = sub.canSelected === 0;
+                                    return (
+                                        <button key={sub.attributeId || si}
+                                            disabled={disabled || switching || sub.selected}
+                                            onClick={() => doSwitch(g.attributeId, sub.attributeId)}
+                                            className={`px-3 py-1.5 rounded-full text-[12px] font-bold border transition active:scale-95 ${
+                                                sub.selected ? 'bg-blue-600 text-white border-blue-600'
+                                                : disabled ? 'bg-slate-100 text-slate-300 border-slate-200'
+                                                : 'bg-white text-blue-700 border-blue-300'
+                                            }`}>
+                                            {sub.attributeName}{sub.price > 0 ? ` +${sub.price}` : ''}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+                <div className="border-t border-blue-300 bg-gradient-to-r from-blue-100 to-sky-100 px-3 py-2.5">
+                    <button
+                        onClick={() => onAdd({ skuCode: working.skuCode, productId: working.productId, name: working.productName, price, spec: buildSpecDesc(attrs) })}
+                        disabled={switching}
+                        className="w-full px-3 py-2.5 bg-blue-600 text-white text-[13px] font-bold rounded-xl active:scale-95 disabled:opacity-50">
+                        加入购物车 {price != null ? `· ${fmtMoney(price)}` : ''}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ========== Step 3: 搜商品 + 加购 ==========
+
+const MenuStep: React.FC<{
+    ctx: OrderContext;
+    cart: Map<string, CartLine>;
+    onCart: (line: { skuCode: string; productId: number | string; name: string; price?: any; spec?: string }, delta: number) => void;
+    onProductsSeen?: (items: any[]) => void;
+    onBack: () => void;
+    onReview: () => void;
+}> = ({ ctx, cart, onCart, onProductsSeen, onBack, onReview }) => {
+    const [query, setQuery] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [err, setErr] = useState<string | null>(null);
+    const [items, setItems] = useState<any[]>([]);
+    const [sheetProduct, setSheetProduct] = useState<any>(null);
+
+    const search = async (q: string) => {
+        const kw = q.trim();
+        if (!kw) return;
+        setLoading(true); setErr(null);
+        try {
+            const r = await callLuckinTool('searchProductForMcp', { deptId: ctx.deptId, query: kw });
+            if (!r.success) throw new Error(r.error || '搜商品失败');
+            const list = asList(r.data);
+            setItems(list);
+            onProductsSeen?.(list);
+        } catch (e: any) {
+            setErr(e?.message || String(e));
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const cartCount = (Array.from(cart.values()) as CartLine[]).reduce((s, l) => s + l.qty, 0);
     const cartTotal = (Array.from(cart.values()) as CartLine[]).reduce((s, l) => {
@@ -314,57 +364,73 @@ const MenuStep: React.FC<{
         return s + (isFinite(p) ? p * l.qty : 0);
     }, 0);
 
-    if (loading) return <Spinner label="正在拉取菜单..." />;
-    if (err) return <ErrorBox msg={err} onRetry={reload} />;
+    const QUICK = ['拿铁', '美式', '生椰', '厚乳', '茶饮', '果汁'];
 
     return (
         <div className="flex flex-col h-full">
             <div className="flex items-center justify-between px-3 py-2 border-b border-blue-200/60 bg-blue-50/60">
-                <button onClick={onBack} className="text-[12px] text-blue-700 active:scale-95">‹ 换{ctx.orderType === 2 ? '地址' : '门店'}</button>
-                <div className="text-[12px] font-bold text-blue-900 truncate mx-2">
-                    {ctx.storeName || ctx.storeCode || '瑞幸'}
-                    <span className="text-[10px] text-blue-700/60 font-normal ml-1.5">{ctx.orderType === 2 ? '外送' : '自提'}</span>
-                </div>
+                <button onClick={onBack} className="text-[12px] text-blue-700 active:scale-95">‹ 换门店</button>
+                <div className="text-[12px] font-bold text-blue-900 truncate mx-2">{ctx.storeName || `门店${ctx.deptId}`}</div>
                 <div className="w-14" />
+            </div>
+            <div className="p-2 border-b border-blue-100 space-y-2">
+                <div className="flex gap-2">
+                    <input value={query} onChange={e => setQuery(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') search(query); }}
+                        placeholder="搜咖啡 / 饮品 (如 拿铁)" className="flex-1 bg-white border border-blue-200 rounded-lg px-2.5 py-1.5 text-[12px]" />
+                    <button onClick={() => search(query)} className="px-3 bg-blue-600 text-white rounded-lg text-[12px] font-bold active:scale-95">搜</button>
+                </div>
+                <div className="flex gap-1.5 flex-wrap">
+                    {QUICK.map(q => (
+                        <button key={q} onClick={() => { setQuery(q); search(q); }} className="px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-[11px] text-blue-700 active:scale-95">{q}</button>
+                    ))}
+                </div>
             </div>
 
             <div className="flex-1 overflow-y-auto luckin-scroll p-2 space-y-2">
-                {items.length === 0
-                    ? <div className="text-center py-8 text-[11px] text-slate-400">这家店暂时没拉到可售商品</div>
-                    : items.map((it: any, idx: number) => {
-                        const code = String(pick(it, CODE_KEYS) || `idx-${idx}`);
-                        const name = pick(it, NAME_KEYS) || '瑞幸商品';
-                        const price = pick(it, PRICE_KEYS);
-                        const inCart = cart.get(code);
-                        const q = inCart?.qty || 0;
-                        return (
-                            <div key={code} className="flex gap-2 p-2 bg-white rounded-xl border border-blue-100">
-                                <div className="w-14 h-14 rounded-lg bg-gradient-to-br from-blue-50 to-sky-50 shrink-0 flex items-center justify-center text-3xl">
-                                    {luckinItemEmoji(name)}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="font-bold text-[12px] text-slate-800 line-clamp-2 leading-snug">{name}</div>
-                                    <div className="flex items-center justify-between mt-1 gap-2">
-                                        {price != null
-                                            ? <div className="text-[12px] font-bold text-blue-700">{fmtMoney(price)}</div>
-                                            : <div className="flex-1" />}
-                                        <div className="flex items-center bg-white border border-blue-300 rounded-md overflow-hidden shrink-0">
-                                            <button
-                                                onClick={() => onCart(code, -1)}
+                {loading ? <Spinner label="搜索中..." />
+                : err ? <ErrorBox msg={err} onRetry={() => search(query)} />
+                : items.length === 0 ? (
+                    <div className="text-center py-8 text-[11px] text-slate-400">搜个关键词看看 ☕<br />比如"拿铁""生椰""美式"</div>
+                ) : items.map((it: any, idx: number) => {
+                    const sku = String(it.skuCode || `idx-${idx}`);
+                    const inCart = cart.get(sku);
+                    const q = inCart?.qty || 0;
+                    return (
+                        <div key={sku} className="flex gap-2 p-2 bg-white rounded-xl border border-blue-100">
+                            <button onClick={() => setSheetProduct(it)} className="w-14 h-14 rounded-lg bg-gradient-to-br from-blue-50 to-sky-50 shrink-0 flex items-center justify-center text-3xl overflow-hidden">
+                                {it.pictureUrl ? <img src={it.pictureUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" loading="lazy" onError={(e: any) => { e.target.style.display = 'none'; }} /> : luckinItemEmoji(it.productName)}
+                            </button>
+                            <div className="flex-1 min-w-0">
+                                <button onClick={() => setSheetProduct(it)} className="block text-left w-full">
+                                    <div className="font-bold text-[12px] text-slate-800 line-clamp-2 leading-snug">{it.productName}</div>
+                                </button>
+                                {Array.isArray(it.tags) && it.tags.length > 0 && (
+                                    <div className="flex gap-1 mt-0.5 flex-wrap">
+                                        {it.tags.slice(0, 2).map((t: string, j: number) => <span key={j} className="text-[9px] px-1 py-px rounded bg-blue-100 text-blue-600">{t}</span>)}
+                                    </div>
+                                )}
+                                <div className="flex items-center justify-between mt-1 gap-2">
+                                    <div className="text-[12px] font-bold text-blue-700">
+                                        {fmtMoney(it.estimatePrice ?? it.initialPrice)}
+                                        {it.initialPrice != null && it.estimatePrice != null && it.initialPrice !== it.estimatePrice && <span className="line-through text-slate-300 ml-1 text-[10px]">{fmtMoney(it.initialPrice)}</span>}
+                                    </div>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                        <button onClick={() => setSheetProduct(it)} title="选规格" className="px-1.5 py-0.5 rounded-md bg-white border border-blue-300 text-blue-700 text-[10px] font-bold active:scale-95">规格</button>
+                                        <div className="flex items-center bg-white border border-blue-300 rounded-md overflow-hidden">
+                                            <button onClick={() => onCart({ skuCode: sku, productId: it.productId, name: it.productName, price: it.estimatePrice ?? it.initialPrice, spec: buildSpecDesc(it.productAttrs) }, -1)}
                                                 disabled={q <= 0}
-                                                className={`w-6 h-6 flex items-center justify-center text-[14px] font-bold ${q <= 0 ? 'text-slate-300' : 'text-blue-700 active:bg-blue-100'}`}
-                                            >−</button>
+                                                className={`w-6 h-6 flex items-center justify-center text-[14px] font-bold ${q <= 0 ? 'text-slate-300' : 'text-blue-700 active:bg-blue-100'}`}>−</button>
                                             <span className="min-w-[20px] text-center text-[11px] font-bold text-slate-700">{q}</span>
-                                            <button
-                                                onClick={() => onCart(code, 1, { name, price })}
-                                                className="w-6 h-6 flex items-center justify-center text-[14px] font-bold text-blue-700 active:bg-blue-100"
-                                            >+</button>
+                                            <button onClick={() => onCart({ skuCode: sku, productId: it.productId, name: it.productName, price: it.estimatePrice ?? it.initialPrice, spec: buildSpecDesc(it.productAttrs) }, 1)}
+                                                className="w-6 h-6 flex items-center justify-center text-[14px] font-bold text-blue-700 active:bg-blue-100">+</button>
                                         </div>
                                     </div>
                                 </div>
                             </div>
-                        );
-                    })}
+                        </div>
+                    );
+                })}
             </div>
 
             {cartCount > 0 && (
@@ -377,20 +443,28 @@ const MenuStep: React.FC<{
                     <button onClick={onReview} className="px-4 py-2 bg-blue-600 text-white text-[12px] font-bold rounded-xl shadow active:scale-95">去结算 →</button>
                 </div>
             )}
+
+            {sheetProduct && (
+                <ProductSheet
+                    ctx={ctx}
+                    product={sheetProduct}
+                    onAdd={(line) => { onCart(line, 1); setSheetProduct(null); }}
+                    onClose={() => setSheetProduct(null)}
+                />
+            )}
         </div>
     );
 };
 
-// ========== Step 4: 确认订单 (algorithm: 尽力调 calcPrice → createOrder) ==========
+// ========== Step 4: 确认订单 (previewOrder → createOrder) ==========
 
 const ReviewStep: React.FC<{
-    tools: LuckinToolDef[];
     ctx: OrderContext;
     cart: Map<string, CartLine>;
-    onCart: (code: string, delta: number) => void;
+    onCart: (line: { skuCode: string; productId: number | string; name: string; price?: any; spec?: string }, delta: number) => void;
     onBack: () => void;
     onOrderPlaced: (orderResult: any) => void;
-}> = ({ tools, ctx, cart, onCart, onBack, onOrderPlaced }) => {
+}> = ({ ctx, cart, onCart, onBack, onOrderPlaced }) => {
     const lines = (Array.from(cart.values()) as CartLine[]);
     const localTotal = lines.reduce((s: number, l: CartLine) => {
         const p = typeof l.price === 'string' ? parseFloat(l.price) : (typeof l.price === 'number' ? l.price : 0);
@@ -398,31 +472,22 @@ const ReviewStep: React.FC<{
     }, 0);
 
     const [priceLoading, setPriceLoading] = useState(false);
-    const [priceData, setPriceData] = useState<any>(null);
+    const [preview, setPreview] = useState<any>(null);
     const [priceErr, setPriceErr] = useState<string | null>(null);
     const [orderLoading, setOrderLoading] = useState(false);
     const [orderErr, setOrderErr] = useState<string | null>(null);
 
     const cartHash = useMemo(() => lines.map((l: CartLine) => `${l.code}x${l.qty}`).sort().join('|'), [lines]);
-
-    const buildItems = (): any[] => lines.map((l: CartLine) => ({ productCode: l.code, code: l.code, quantity: l.qty }));
-    const buildArgs = (): any => {
-        const args: any = { items: buildItems(), orderType: ctx.orderType };
-        if (ctx.storeCode) { args.storeCode = ctx.storeCode; args.storeId = ctx.storeCode; }
-        if (ctx.orderType === 2 && ctx.addressId) args.addressId = ctx.addressId;
-        return args;
-    };
+    const productList = () => lines.map((l: CartLine) => ({ amount: l.qty, productId: l.productId, skuCode: l.code }));
 
     useEffect(() => {
-        if (!lines.length) { setPriceData(null); return; }
-        const tool = resolveTool(tools, 'calcPrice');
-        if (!tool) { setPriceData(null); setPriceErr(null); return; } // 没有计价工具就跳过, 用本地合计
+        if (!lines.length) { setPreview(null); return; }
         let cancelled = false;
         setPriceLoading(true); setPriceErr(null);
-        callLuckinTool(tool, buildArgs()).then((r: any) => {
+        callLuckinTool('previewOrder', { deptId: ctx.deptId, productList: productList() }).then((r: any) => {
             if (cancelled) return;
-            if (!r.success) { setPriceErr(r.error || '算价失败'); setPriceData(null); }
-            else setPriceData(r.data || {});
+            if (!r.success) { setPriceErr(r.error || '算价失败'); setPreview(null); }
+            else setPreview(r.data || {});
             setPriceLoading(false);
         }).catch((e: any) => {
             if (cancelled) return;
@@ -431,15 +496,21 @@ const ReviewStep: React.FC<{
         });
         return () => { cancelled = true; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [cartHash, ctx.storeCode, ctx.orderType]);
+    }, [cartHash, ctx.deptId]);
 
     const handleOrder = async () => {
         if (!lines.length) return;
-        const tool = resolveTool(tools, 'createOrder');
-        if (!tool) { setOrderErr('没在瑞幸工具清单里找到"下单"工具。可调整 ACTION_KEYWORDS。'); return; }
         setOrderLoading(true); setOrderErr(null);
         try {
-            const r = await callLuckinTool(tool, buildArgs());
+            const args: any = {
+                deptId: ctx.deptId,
+                productList: productList(),
+                longitude: ctx.longitude,
+                latitude: ctx.latitude,
+            };
+            const coupons = preview?.couponCodeList;
+            if (Array.isArray(coupons) && coupons.length) args.couponCodeList = coupons;
+            const r = await callLuckinTool('createOrder', args);
             if (!r.success) throw new Error(r.error || '下单失败');
             onOrderPlaced(r.data);
         } catch (e: any) {
@@ -449,7 +520,9 @@ const ReviewStep: React.FC<{
         }
     };
 
-    const finalPrice = pick(priceData, ['price', 'totalAmount', 'payAmount', 'realPayAmount', 'total']);
+    const finalPrice = preview?.discountPrice;
+    const original = preview?.totalInitialPrice;
+    const privilege = preview?.privilegeMoney;
 
     return (
         <div className="flex flex-col h-full">
@@ -459,12 +532,9 @@ const ReviewStep: React.FC<{
                 <div className="w-12" />
             </div>
             <div className="flex-1 overflow-y-auto luckin-scroll p-3 space-y-2">
-                <div className="text-[10px] text-blue-700/70 font-bold uppercase">送达 / 取餐</div>
-                <div className="bg-white rounded-xl border border-blue-100 p-2.5 text-[12px] text-slate-700">
-                    {ctx.orderType === 2
-                        ? <>📍 {ctx.addressLabel || ctx.addressId || '配送地址'}</>
-                        : <>🏪 {ctx.storeName || ctx.storeCode} (到店自提)</>}
-                </div>
+                <div className="text-[10px] text-blue-700/70 font-bold uppercase">取餐门店</div>
+                <div className="bg-white rounded-xl border border-blue-100 p-2.5 text-[12px] text-slate-700">🏪 {ctx.storeName || `门店 ${ctx.deptId}`} (到店自提)</div>
+
                 <div className="text-[10px] text-blue-700/70 font-bold uppercase mt-2">商品</div>
                 <div className="bg-white rounded-xl border border-blue-100 overflow-hidden">
                     {lines.map((l: CartLine) => (
@@ -472,12 +542,13 @@ const ReviewStep: React.FC<{
                             <span className="text-2xl shrink-0">{luckinItemEmoji(l.name)}</span>
                             <div className="flex-1 min-w-0">
                                 <div className="font-bold text-[12px] text-slate-800 truncate">{l.name}</div>
+                                {l.spec && <div className="text-[9px] text-slate-400 truncate">{l.spec}</div>}
                                 {l.price != null && <div className="text-[10px] text-blue-700">{fmtMoney(l.price)}</div>}
                             </div>
                             <div className="flex items-center bg-blue-50 border border-blue-200 rounded-md overflow-hidden shrink-0">
-                                <button onClick={() => onCart(l.code, -1)} className="w-6 h-6 flex items-center justify-center text-[14px] font-bold text-blue-700 active:bg-blue-100">−</button>
+                                <button onClick={() => onCart({ skuCode: l.code, productId: l.productId, name: l.name, price: l.price, spec: l.spec }, -1)} className="w-6 h-6 flex items-center justify-center text-[14px] font-bold text-blue-700 active:bg-blue-100">−</button>
                                 <span className="min-w-[20px] text-center text-[11px] font-bold text-slate-700">{l.qty}</span>
-                                <button onClick={() => onCart(l.code, 1)} className="w-6 h-6 flex items-center justify-center text-[14px] font-bold text-blue-700 active:bg-blue-100">+</button>
+                                <button onClick={() => onCart({ skuCode: l.code, productId: l.productId, name: l.name, price: l.price, spec: l.spec }, 1)} className="w-6 h-6 flex items-center justify-center text-[14px] font-bold text-blue-700 active:bg-blue-100">+</button>
                             </div>
                         </div>
                     ))}
@@ -492,8 +563,13 @@ const ReviewStep: React.FC<{
                         </div>
                     ) : priceErr ? (
                         <div className="text-[11px] text-amber-600 leading-relaxed whitespace-pre-wrap break-all">算价未通过 (可先按本地合计下单): {priceErr}</div>
-                    ) : finalPrice != null ? (
-                        <div className="flex justify-between"><span className="text-slate-500">应付</span><span className="font-bold text-blue-700">{fmtMoney(finalPrice)}</span></div>
+                    ) : preview ? (
+                        <>
+                            {original != null && <div className="flex justify-between text-[10px] text-slate-400"><span>商品总价</span><span>{fmtMoney(original)}</span></div>}
+                            {privilege != null && Number(privilege) > 0 && <div className="flex justify-between text-emerald-600"><span>优惠</span><span>-{fmtMoney(privilege)}</span></div>}
+                            {Array.isArray(preview.couponCodeList) && preview.couponCodeList.length > 0 && <div className="flex justify-between text-[11px] text-blue-600"><span>已用券</span><span>{preview.couponCodeList.length} 张</span></div>}
+                            <div className="flex justify-between border-t border-blue-100 pt-1.5"><span className="text-slate-500">实付</span><span className="font-bold text-blue-700">{fmtMoney(finalPrice)}</span></div>
+                        </>
                     ) : (
                         <div className="flex justify-between"><span className="text-slate-500">本地合计</span><span>{localTotal > 0 ? fmtMoney(localTotal) : '—'}</span></div>
                     )}
@@ -508,7 +584,7 @@ const ReviewStep: React.FC<{
             </div>
             <div className="border-t border-blue-300 bg-gradient-to-r from-blue-100 to-sky-100 px-3 py-2.5 flex items-center gap-3">
                 <div className="flex-1 min-w-0">
-                    <div className="text-[10px] text-blue-800/70">合计</div>
+                    <div className="text-[10px] text-blue-800/70">实付</div>
                     <div className="text-[17px] font-bold text-blue-800">
                         {priceLoading ? '...' : (finalPrice != null ? fmtMoney(finalPrice) : (localTotal > 0 ? fmtMoney(localTotal) : '—'))}
                     </div>
@@ -525,36 +601,44 @@ const ReviewStep: React.FC<{
 
 // ========== Step 5: 下单成功 ==========
 
-const SuccessStep: React.FC<{ orderResult: any; onClose: () => void }> = ({ orderResult, onClose }) => {
-    const orderId = pick(orderResult, ['orderId', 'orderNo', 'orderCode']);
-    const payUrl = pick(orderResult, ['payUrl', 'paymentUrl', 'payH5Url', 'cashierUrl', 'h5Url']);
+const SuccessStep: React.FC<{ ctx: OrderContext; orderResult: any; onClose: () => void }> = ({ orderResult, onClose }) => {
+    const orderId = pick(orderResult, ['orderIdStr', 'orderId']);
+    const payUrl = pick(orderResult, ['payOrderUrl']);
+    const qrUrl = pick(orderResult, ['payOrderQrCodeUrl']);
+    const price = pick(orderResult, ['discountPrice']);
+    const needPay = orderResult?.needPay;
+
+    const [detail, setDetail] = useState<any>(null);
+    useEffect(() => {
+        if (!orderId) return;
+        callLuckinTool('queryOrderDetailInfo', { orderId: String(orderId) }).then((r: any) => {
+            if (r?.success) setDetail(r.data);
+        }).catch(() => {});
+    }, [orderId]);
+    const takeCode = detail?.takeMealCodeInfo?.code;
+
     return (
         <div className="flex flex-col h-full">
             <div className="flex-1 overflow-y-auto luckin-scroll p-4 space-y-3">
                 <div className="text-center py-3">
                     <div className="text-5xl mb-2">🎉</div>
                     <div className="text-[16px] font-bold text-blue-900">下单成功！</div>
-                    <div className="text-[11px] text-blue-700/70 mt-1">订单已创建, 等待支付</div>
+                    <div className="text-[11px] text-blue-700/70 mt-1">{needPay ? '订单已创建, 等待支付' : '订单已创建'}</div>
                 </div>
                 <div className="bg-white rounded-xl border border-blue-100 p-3 space-y-2 text-[12px] text-slate-700">
-                    {orderId && (
-                        <div>
-                            <div className="text-[10px] text-slate-400">订单号</div>
-                            <div className="font-mono text-[11px] break-all">{orderId}</div>
-                        </div>
+                    {orderId && <div><div className="text-[10px] text-slate-400">订单号</div><div className="font-mono text-[11px] break-all">{orderId}</div></div>}
+                    {price != null && <div><div className="text-[10px] text-slate-400">实付</div><div className="font-bold text-blue-700">{fmtMoney(price)}</div></div>}
+                    {takeCode && takeCode !== '生成中' && (
+                        <div><div className="text-[10px] text-slate-400">取餐码</div><div className="text-[20px] font-black tracking-widest text-blue-700">{takeCode}</div></div>
                     )}
                 </div>
             </div>
             <div className="border-t border-blue-300 bg-gradient-to-r from-blue-100 to-sky-100 px-3 py-2.5 flex items-center gap-2">
-                {payUrl && (
-                    <a href={payUrl} target="_blank" rel="noreferrer"
-                        className="flex-1 text-center px-3 py-2.5 bg-blue-600 text-white text-[12px] font-bold rounded-xl shadow active:scale-95"
-                    >去支付 →</a>
+                {(payUrl || qrUrl) && (
+                    <a href={payUrl || qrUrl} target="_blank" rel="noreferrer"
+                        className="flex-1 text-center px-3 py-2.5 bg-blue-600 text-white text-[12px] font-bold rounded-xl shadow active:scale-95">去支付 →</a>
                 )}
-                <button
-                    onClick={onClose}
-                    className={`${payUrl ? 'shrink-0' : 'flex-1'} px-3 py-2.5 bg-white border border-blue-300 text-blue-800 text-[12px] font-bold rounded-xl active:scale-95`}
-                >完成</button>
+                <button onClick={onClose} className={`${(payUrl || qrUrl) ? 'shrink-0' : 'flex-1'} px-3 py-2.5 bg-white border border-blue-300 text-blue-800 text-[12px] font-bold rounded-xl active:scale-95`}>完成</button>
             </div>
         </div>
     );
@@ -753,48 +837,40 @@ const InAppChat: React.FC<{
 // ========== 主组件 ==========
 
 const LuckinMiniApp: React.FC<LuckinMiniAppProps> = ({ open, onClose, char, messages, isTyping, onSendMessage, onStateChange, onConfirmOrder }) => {
-    const [step, setStep] = useState<Step>('mode');
-    const [orderType, setOrderType] = useState<1 | 2 | null>(null);
+    const [step, setStep] = useState<Step>('location');
+    const [loc, setLoc] = useState<{ lng: number; lat: number } | null>(null);
     const [ctx, setCtx] = useState<OrderContext | null>(null);
     const [cart, setCart] = useState<Map<string, CartLine>>(new Map());
-    const [menuDict, setMenuDict] = useState<Record<string, { name?: string; price?: string }>>({});
-    const [tools, setTools] = useState<LuckinToolDef[]>([]);
-    const [toolsErr, setToolsErr] = useState<string | null>(null);
+    const [menuDict, setMenuDict] = useState<Record<string, { name?: string; price?: string | number; productId?: number | string }>>({});
     const [orderResult, setOrderResult] = useState<any>(null);
 
     useEffect(() => {
         if (open) {
-            setStep('mode');
-            setOrderType(null);
+            setStep('location');
+            setLoc(null);
             setCtx(null);
             setCart(new Map());
             setMenuDict({});
             setOrderResult(null);
-            setToolsErr(null);
-            // 拉一次工具清单, 用于 resolveTool 语义解析
-            listLuckinTools(false).then((t) => setTools(t)).catch((e) => setToolsErr(e?.message || String(e)));
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
 
-    // 每次状态变化推给父组件 → useChatAI 注入到 system prompt 末尾
+    // 状态推给父组件 → useChatAI 注入 system prompt
     useEffect(() => {
         if (!onStateChange) return;
         const cartArr = (Array.from(cart.values()) as CartLine[]).map((l: CartLine) => ({
-            code: l.code, name: l.name, price: l.price, qty: l.qty, spec: l.spec,
+            code: l.code, productId: l.productId, name: l.name, price: l.price, qty: l.qty, spec: l.spec,
         }));
         onStateChange({
             open,
             step: step === 'success' ? 'review' : step,
-            orderType: ctx?.orderType ?? (orderType || undefined),
-            storeCode: ctx?.storeCode,
+            deptId: ctx?.deptId,
             storeName: ctx?.storeName,
-            addressLabel: ctx?.addressLabel,
             cart: cartArr,
             menuItems: Object.keys(menuDict).length ? menuDict : undefined,
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, step, orderType, ctx, cart, menuDict]);
+    }, [open, step, ctx, cart, menuDict]);
 
     useEffect(() => {
         if (!open && onStateChange) onStateChange({ open: false });
@@ -817,16 +893,31 @@ const LuckinMiniApp: React.FC<LuckinMiniAppProps> = ({ open, onClose, char, mess
         return out;
     }, [messages]);
 
-    const updateCart = (code: string, delta: number, item?: { name: string; price?: any }) => {
+    // 加购 (line 携带 skuCode + productId)
+    const updateCart = (line: { skuCode: string; productId: number | string; name: string; price?: any; spec?: string }, delta: number) => {
         setCart((prev: Map<string, CartLine>) => {
             const next = new Map<string, CartLine>(prev);
-            const cur = next.get(code);
+            const cur = next.get(line.skuCode);
             if (cur) {
                 const nextQty = Math.max(0, Math.min(20, cur.qty + delta));
-                if (nextQty === 0) next.delete(code);
-                else next.set(code, { ...cur, qty: nextQty });
-            } else if (delta > 0 && item) {
-                next.set(code, { code, name: item.name, price: item.price, qty: delta });
+                if (nextQty === 0) next.delete(line.skuCode);
+                else next.set(line.skuCode, { ...cur, qty: nextQty, spec: line.spec ?? cur.spec });
+            } else if (delta > 0) {
+                next.set(line.skuCode, { code: line.skuCode, productId: line.productId, name: line.name, price: line.price, qty: delta, spec: line.spec });
+            }
+            return next;
+        });
+    };
+
+    // 搜到商品 → 累积进 menuDict (key=skuCode)
+    const handleProductsSeen = (items: any[]) => {
+        if (!Array.isArray(items) || !items.length) return;
+        setMenuDict((prev) => {
+            const next = { ...prev };
+            for (const it of items) {
+                const sku = it?.skuCode;
+                if (!sku) continue;
+                next[String(sku)] = { name: it.productName, price: it.estimatePrice ?? it.initialPrice, productId: it.productId };
             }
             return next;
         });
@@ -834,25 +925,20 @@ const LuckinMiniApp: React.FC<LuckinMiniAppProps> = ({ open, onClose, char, mess
 
     const handleAddFromProposal = (it: LuckinProposalItem) => {
         if (!it?.code && !it?.name) return;
-        if (!Object.keys(menuDict).length) {
-            console.warn('☕ [Luckin-MiniApp] 拒绝加购: 当前菜单还没加载');
-            return;
-        }
-        let realCode: string | undefined = menuDict[it.code || ''] ? it.code : undefined;
-        let meal = realCode ? menuDict[realCode] : undefined;
+        if (!Object.keys(menuDict).length) { console.warn('☕ [Luckin-MiniApp] 拒绝加购: 还没搜过商品'); return; }
+        let sku: string | undefined = menuDict[it.code || ''] ? it.code : undefined;
+        let meal = sku ? menuDict[sku] : undefined;
         if (!meal) {
             const { fixed, fixes } = autoFixProposalCodesByName([it], menuDict);
             if (fixes.length && fixed[0]?.code && menuDict[fixed[0].code]) {
-                realCode = fixed[0].code;
-                meal = realCode ? menuDict[realCode] : undefined;
+                sku = fixed[0].code;
+                meal = sku ? menuDict[sku] : undefined;
             }
         }
-        if (!realCode || !meal) {
-            console.warn(`☕ [Luckin-MiniApp] 拒绝加购: code='${it.code}' name='${it.name}' 不在当前菜单`);
-            return;
+        if (!sku || !meal || meal.productId == null) { console.warn(`☕ [Luckin-MiniApp] 拒绝加购: code='${it.code}' name='${it.name}' 不在已搜商品里`); return; }
+        for (let i = 0; i < (it.qty || 1); i++) {
+            updateCart({ skuCode: sku, productId: meal.productId, name: meal.name || it.name, price: meal.price }, 1);
         }
-        const name = meal.name || it.name;
-        for (let i = 0; i < (it.qty || 1); i++) updateCart(realCode, 1, { name, price: meal.price });
     };
     const handleAddAllFromProposal = (items: LuckinProposalItem[]) => { for (const it of items) handleAddFromProposal(it); };
 
@@ -902,25 +988,24 @@ const LuckinMiniApp: React.FC<LuckinMiniAppProps> = ({ open, onClose, char, mess
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                    {toolsErr && <ErrorBox msg={`拉取瑞幸工具清单失败: ${toolsErr}`} onRetry={() => listLuckinTools(true).then(setTools).catch((e) => setToolsErr(e?.message || String(e)))} />}
-                    {step === 'mode' && (
-                        <ModeStep onPick={(t: 1 | 2) => { setOrderType(t); setStep('pick'); }} />
+                    {step === 'location' && (
+                        <LocationStep onPick={(lng, lat) => { setLoc({ lng, lat }); setStep('store'); }} />
                     )}
-                    {step === 'pick' && orderType && (
-                        <PickStep tools={tools} orderType={orderType} onBack={() => setStep('mode')} onPick={(c: OrderContext) => { setCtx(c); setStep('menu'); }} />
+                    {step === 'store' && loc && (
+                        <StoreStep loc={loc} onBack={() => setStep('location')} onPick={(c: OrderContext) => { setCtx(c); setStep('menu'); }} />
                     )}
                     {step === 'menu' && ctx && (
-                        <MenuStep tools={tools} ctx={ctx} cart={cart} onCart={updateCart} onMenuLoaded={setMenuDict} onBack={() => setStep('pick')} onReview={() => setStep('review')} />
+                        <MenuStep ctx={ctx} cart={cart} onCart={updateCart} onProductsSeen={handleProductsSeen} onBack={() => setStep('store')} onReview={() => setStep('review')} />
                     )}
                     {step === 'review' && ctx && (
-                        <ReviewStep tools={tools} ctx={ctx} cart={cart} onCart={updateCart} onBack={() => setStep('menu')} onOrderPlaced={handleOrderPlaced} />
+                        <ReviewStep ctx={ctx} cart={cart} onCart={updateCart} onBack={() => setStep('menu')} onOrderPlaced={handleOrderPlaced} />
                     )}
-                    {step === 'success' && orderResult && (
-                        <SuccessStep orderResult={orderResult} onClose={onClose} />
+                    {step === 'success' && ctx && orderResult && (
+                        <SuccessStep ctx={ctx} orderResult={orderResult} onClose={onClose} />
                     )}
                 </div>
 
-                {char && step !== 'mode' && (
+                {char && step !== 'location' && (
                     <InAppChat
                         char={char}
                         visibleMessages={visibleChatMessages}

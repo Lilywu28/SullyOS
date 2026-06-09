@@ -227,7 +227,7 @@ export const listLuckinTools = async (forceRefresh = false): Promise<LuckinToolD
  * 等跑通 tools/list 拿到真实 schema 后, 可以在这里按瑞幸实际字段名收紧校验。
  */
 const QTY_KEYS = ['quantity', 'qty', 'count', 'num', 'number', 'amount'];
-const ITEM_LIST_KEYS = ['items', 'products', 'goods', 'cartItems', 'skuList', 'goodsList', 'list'];
+const ITEM_LIST_KEYS = ['productList', 'items', 'products', 'goods', 'cartItems', 'skuList', 'goodsList', 'list'];
 const CODE_ALIASES = ['code', 'skuCode', 'goodsCode', 'productId', 'skuId', 'goodsId', 'spuId'];
 
 const coerceQty = (obj: any): void => {

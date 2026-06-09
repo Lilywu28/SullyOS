@@ -1184,10 +1184,7 @@ const Chat: React.FC = () => {
             return s + (isFinite(p) ? p * c.qty : 0);
         }, 0);
         const totalStr = total > 0 ? ` 共¥${total.toFixed(2)}` : '';
-        const where = ctx.orderType === 2
-            ? `配送至 ${ctx.addressLabel || ctx.addressId}`
-            : `到店自提 (${ctx.storeName || ctx.storeCode})`;
-        const content = `${where} · ${summary}${totalStr}`;
+        const content = `到店自提 (${ctx.storeName || ctx.deptId}) · ${summary}${totalStr}`;
         await DB.saveMessage({
             charId: char.id,
             role: 'user',
