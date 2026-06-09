@@ -102,8 +102,11 @@ export interface OSTheme {
   /** Instant Push 用户气泡左侧的"准备中"圆点动画。默认开启。 */
   chatPendingIndicator?: boolean;
   /** 聊天「白框」自定义 CSS：作用于 .sully-chat-header / .sully-chat-inputbar / .sully-chat-root，
-   *  可换色 / 贴图 / 改圆角与不规则外形（clip-path 等）。在 Appearance「白框自定义」里直接输入。 */
+   *  以及顶栏各零件 .sully-chat-back / .sully-chat-avatar / .sully-chat-name / .sully-chat-status /
+   *  .sully-chat-buffs / .sully-chat-token / .sully-chat-trigger。可换色 / 贴图 / 改外形 / 挪位。 */
   chatChromeCustomCss?: string;
+  /** 隐藏顶栏的情绪 buff 栏。 */
+  chatHideHeaderBuffs?: boolean;
 }
 
 export interface AppearancePreset {

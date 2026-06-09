@@ -2313,6 +2313,7 @@ const Chat: React.FC = () => {
                 headerDensity={osTheme.chatHeaderDensity}
                 statusStyle={osTheme.chatStatusStyle}
                 chromeStyle={osTheme.chatChromeStyle}
+                hideBuffs={osTheme.chatHideHeaderBuffs}
                 acnh={acnh}
              />
 

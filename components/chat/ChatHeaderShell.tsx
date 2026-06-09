@@ -28,6 +28,8 @@ interface ChatHeaderShellProps {
     onTriggerAI: () => void;
     onShowCharsPanel: () => void;
     onDeleteBuff?: (buffId: string) => void;
+    /** 隐藏顶栏情绪 buff 栏（Appearance 里的「显示情绪栏」开关）。 */
+    hideBuffs?: boolean;
     headerStyle?: 'default' | 'minimal' | 'gradient' | 'wechat' | 'telegram' | 'discord' | 'pixel';
     avatarShape?: 'circle' | 'rounded' | 'square';
     headerAlign?: 'left' | 'center';
@@ -69,6 +71,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
     onTriggerAI,
     onShowCharsPanel,
     onDeleteBuff,
+    hideBuffs = false,
     headerStyle = 'default',
     avatarShape = 'circle',
     headerAlign = 'left',
@@ -77,7 +80,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
     chromeStyle = 'soft',
     acnh = false,
 }) => {
-    const buffs: CharacterBuff[] = activeCharacter.activeBuffs || [];
+    const buffs: CharacterBuff[] = hideBuffs ? [] : (activeCharacter.activeBuffs || []);
     const [openBuff, setOpenBuff] = useState<CharacterBuff | null>(null);
     const [isBuffListExpanded, setIsBuffListExpanded] = useState(false);
     const [confirmDeleteBuff, setConfirmDeleteBuff] = useState<CharacterBuff | null>(null);
@@ -254,7 +257,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
     const renderBuffRow = (centered: boolean) => {
         if (buffs.length === 0) return null;
         return (
-            <div className={`relative w-full min-w-0 max-w-full ${centered ? 'flex justify-center' : ''}`}>
+            <div className={`sully-chat-buffs relative w-full min-w-0 max-w-full ${centered ? 'flex justify-center' : ''}`}>
                 <div
                     ref={buffPreviewRef}
                     className={`flex w-full min-w-0 max-w-full items-center gap-0.5 overflow-x-auto whitespace-nowrap pr-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${centered ? 'justify-center' : ''}`}
@@ -310,7 +313,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
     const floatingStatusNodes = (lastTokenUsage || isInstantSending || isEmotionEvaluating || isMemoryPalaceProcessing) ? (
         <div className="absolute right-12 top-1/2 -translate-y-1/2 flex items-center gap-1.5 pointer-events-none">
             {lastTokenUsage && (
-                <div className={`text-[9px] px-1.5 py-0.5 rounded-md font-mono border ${isDarkHeader ? 'bg-slate-800 text-slate-300 border-white/10' : isPixelHeader ? 'bg-[#fff7ed] text-[#8f674a] border-[#8f674a]/20' : 'bg-slate-100/95 text-slate-400 border-slate-200'}`}>
+                <div className={`sully-chat-token text-[9px] px-1.5 py-0.5 rounded-md font-mono border ${isDarkHeader ? 'bg-slate-800 text-slate-300 border-white/10' : isPixelHeader ? 'bg-[#fff7ed] text-[#8f674a] border-[#8f674a]/20' : 'bg-slate-100/95 text-slate-400 border-slate-200'}`}>
                     {lastTokenUsage}
                 </div>
             )}
@@ -334,8 +337,8 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
 
     const renderCenteredInfo = () => (
         <div className="flex w-full min-w-0 max-w-full flex-col items-center text-center">
-            <img src={activeCharacter.avatar} className={`w-10 h-10 object-cover shadow-sm ${avatarRadiusClass}`} alt="avatar" />
-            <div className={`mt-1 font-bold ${primaryTextClass}`}>{activeCharacter.name}</div>
+            <img src={activeCharacter.avatar} className={`sully-chat-avatar w-10 h-10 object-cover shadow-sm ${avatarRadiusClass}`} alt="avatar" />
+            <div className={`sully-chat-name mt-1 font-bold ${primaryTextClass}`}>{activeCharacter.name}</div>
             {buffs.length > 0 && (
                 <div className="mt-1 min-h-[18px] w-full">
                     {renderBuffRow(true)}
@@ -346,13 +349,13 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
 
     const renderStandardInfo = () => (
         <>
-            <img src={activeCharacter.avatar} className={`w-10 h-10 object-cover shadow-sm ${avatarRadiusClass}`} alt="avatar" />
-            <div className="flex-1 min-w-0 flex flex-col items-start text-left">
-                <div className={`font-bold ${primaryTextClass}`}>{activeCharacter.name}</div>
-                <div className="flex items-center gap-2 flex-wrap">
+            <img src={activeCharacter.avatar} className={`sully-chat-avatar w-10 h-10 object-cover shadow-sm ${avatarRadiusClass}`} alt="avatar" />
+            <div className="sully-chat-info flex-1 min-w-0 flex flex-col items-start text-left">
+                <div className={`sully-chat-name font-bold ${primaryTextClass}`}>{activeCharacter.name}</div>
+                <div className="sully-chat-status flex items-center gap-2 flex-wrap">
                     {onlineStatusNode}
                     {lastTokenUsage && (
-                        <div className={`text-[9px] px-1.5 py-0.5 rounded-md font-mono border ${isDarkHeader ? 'bg-slate-800 text-slate-300 border-white/10' : isPixelHeader ? 'bg-[#fff7ed] text-[#8f674a] border-[#8f674a]/20' : 'bg-slate-100 text-slate-400 border-slate-200'}`} title={tokenBreakdown ? `prompt: ${tokenBreakdown.prompt} | completion: ${tokenBreakdown.completion} | msgs: ${tokenBreakdown.msgCount} | pass: ${tokenBreakdown.pass}` : ''}>
+                        <div className={`sully-chat-token text-[9px] px-1.5 py-0.5 rounded-md font-mono border ${isDarkHeader ? 'bg-slate-800 text-slate-300 border-white/10' : isPixelHeader ? 'bg-[#fff7ed] text-[#8f674a] border-[#8f674a]/20' : 'bg-slate-100 text-slate-400 border-slate-200'}`} title={tokenBreakdown ? `prompt: ${tokenBreakdown.prompt} | completion: ${tokenBreakdown.completion} | msgs: ${tokenBreakdown.msgCount} | pass: ${tokenBreakdown.pass}` : ''}>
                             {lastTokenUsage}
                         </div>
                     )}
@@ -394,7 +397,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                 </div>
             ) : useCenteredLayout ? (
                 <div className="relative w-full min-h-[56px] flex items-end justify-center">
-                    <button onClick={onClose} className={`absolute left-0 bottom-2 p-2 ${iconButtonClass}`}>
+                    <button onClick={onClose} className={`sully-chat-back absolute left-0 bottom-2 p-2 ${iconButtonClass}`}>
                         <CaretLeft className="w-5 h-5" weight="bold" />
                     </button>
 
@@ -407,13 +410,13 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                         {renderCenteredInfo()}
                     </div>
 
-                    <button onClick={onTriggerAI} className={`absolute right-0 bottom-2 p-2 ${actionButtonClass}`} title="触发 AI">
+                    <button onClick={onTriggerAI} className={`sully-chat-trigger absolute right-0 bottom-2 p-2 ${actionButtonClass}`} title="触发 AI">
                         <Lightning className="w-5 h-5" weight="bold" />
                     </button>
                 </div>
             ) : (
                 <div className="flex items-center gap-3 w-full">
-                    <button onClick={onClose} className={`p-2 -ml-2 ${iconButtonClass}`}>
+                    <button onClick={onClose} className={`sully-chat-back p-2 -ml-2 ${iconButtonClass}`}>
                         <CaretLeft className="w-5 h-5" weight="bold" />
                     </button>
 
@@ -421,7 +424,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                         {renderStandardInfo()}
                     </div>
 
-                    <button onClick={onTriggerAI} className={`p-2 ml-auto ${actionButtonClass}`} title="触发 AI">
+                    <button onClick={onTriggerAI} className={`sully-chat-trigger p-2 ml-auto ${actionButtonClass}`} title="触发 AI">
                         <Lightning className="w-5 h-5" weight="bold" />
                     </button>
                 </div>
