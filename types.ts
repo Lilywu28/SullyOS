@@ -37,6 +37,7 @@ export enum AppID {
   HotNews = 'hot_news', // 热点 — 分时段召回的多平台热榜可视化（决定角色可能聊起的话题）
   VRWorld = 'vrworld', // 彼方 — 角色自主登入的虚拟世界（定时驱动，房间里看小说/听歌/留言，产出活动卡注入聊天+记忆）
   CharCreatorDev = 'char_creator_dev', // 捏脸系统开发模式 — 仅开发模式可见，向捏人器指定类目追加自定义部件
+  WorldHome = 'world_home', // 家园 — 同世界观多角色共同生活的大世界（观测驱动演绎，每角色独立 LLM 调用 + NPC 世界引擎）
 }
 
 export interface SystemLog {
@@ -733,6 +734,124 @@ export interface VRCardMeta {
     // --- 邮局专用 ---
     /** 本次写信/回信的正文摘要 */
     letterExcerpt?: string;
+}
+
+// ============================================================
+// 家园（WorldHome）—— 同世界观多角色共同生活的大世界
+// ============================================================
+
+/**
+ * user 在该世界里的存在感模式：
+ * - light: 轻度——只是观察角色的一个切面，角色依旧以 user 为最重要的人（与 chatapp 聊天人设一致）
+ * - medium: 中度——user 是世界中普通的一份子，不特殊
+ * - heavy: 重度——user 不存在 / 是透明的幽灵，演绎中完全无视（通常用于看角色之间的关系）
+ */
+export type WorldHomeMode = 'light' | 'medium' | 'heavy';
+
+/** 世界里的 NPC：没有记忆系统，完全服务于世界观，由"世界引擎"一次 LLM 调用全部演绎。 */
+export interface WorldNPC {
+    id: string;
+    name: string;
+    /** 一句话人设（职业/性格/与谁有关） */
+    persona: string;
+    /** 可视化兜底 emoji（NPC 不走捏人系统） */
+    emoji?: string;
+}
+
+/** 居住安排：一间小屋及其住户。不在任何小屋里的成员视为独居（各自的小屋）。 */
+export interface WorldHouse {
+    id: string;
+    name: string;
+    residentIds: string[];
+}
+
+/** 成员（或 NPC）两两之间的关系条。key 对无序：保存时始终 aId < bId。 */
+export interface WorldRelationship {
+    aId: string;
+    bId: string;
+    /** 关系名（挚友/死对头/暧昧中…），用户可编辑，演绎不强行改 */
+    label?: string;
+    /** 0-100，演绎产出的 delta 会落在这里 */
+    value: number;
+}
+
+/** 一个"世界"的完整定义（IndexedDB worlds 表）。 */
+export interface WorldProfile {
+    id: string;
+    name: string;
+    /** 世界观总述（这个世界是什么样的，发生在哪，大家以什么身份生活） */
+    worldview: string;
+    mode: WorldHomeMode;
+    /** 参与的角色（CharacterProfile.id） */
+    memberIds: string[];
+    npcs: WorldNPC[];
+    houses: WorldHouse[];
+    relationships: WorldRelationship[];
+    /** 每天离线 tick 的时段（早/午/晚），空数组 = 仅手动观测推进 */
+    offlineTickSlots?: ('morning' | 'noon' | 'evening')[];
+    /** 剧情时钟：累计推进的半天数（0 = 第1天白天） */
+    storyClock: number;
+    /** 生成内容是否注入各成员的 1v1 聊天（默认 true） */
+    injectToChat?: boolean;
+    /** 该世界专属 API 覆盖；不设则回落全局 apiConfig */
+    api?: { baseUrl: string; apiKey: string; model: string };
+    createdAt: number;
+    updatedAt: number;
+}
+
+/** 一轮演绎中单个角色的产出（一次独立 LLM 调用，确保没人开上帝视角）。 */
+export interface WorldCharBeat {
+    charId: string;
+    charName: string;
+    /** 角色根据环境自判定的位置 */
+    location: string;
+    /** 小说式行为描述 */
+    narrative: string;
+    /** 心情（一两个词） */
+    mood: string;
+    /** 数值面板（体力/心情值/自定义键） */
+    statusPanel?: Record<string, number | string>;
+    /** 手机内容 */
+    phone?: {
+        posts?: string[];
+        dms?: { to: string; lines: string[] }[];
+    };
+    /** 本轮产出的关系变化（按名字回填到 world.relationships） */
+    relationshipDeltas?: { withName: string; delta: number; reason?: string }[];
+}
+
+/** 一轮演绎（"观测"或离线 tick 触发，推进半天剧情时间；IndexedDB world_episodes 表）。 */
+export interface WorldEpisode {
+    id: string;
+    worldId: string;
+    /** 第几轮（= 演绎完成后的 storyClock） */
+    round: number;
+    /** 剧情时间标签（第N天 白天/夜晚） */
+    storyTime: string;
+    trigger: 'observe' | 'tick';
+    /** NPC 群像（一次调用全部 NPC） */
+    npcScene?: string;
+    /** NPC 留下的、可被下一轮角色接住的事件钩子 */
+    npcHooks?: string[];
+    beats: WorldCharBeat[];
+    /** 机械拼接的本轮梗概，喂给下一轮做连续性 */
+    summary: string;
+    createdAt: number;
+}
+
+/** 注入聊天的 world_card 消息的 metadata 结构。 */
+export interface WorldCardMeta {
+    worldCard: true;
+    worldId: string;
+    worldName: string;
+    mode: WorldHomeMode;
+    round: number;
+    storyTime: string;
+    location?: string;
+    mood?: string;
+    narrative?: string;
+    statusPanel?: Record<string, number | string>;
+    phonePosts?: string[];
 }
 
 /** 邮局：一封信收到的回复（留档用）。 */
@@ -2015,7 +2134,7 @@ export interface GameSession {
     lastPlayedAt: number;
 }
 
-export type MessageType = 'text' | 'image' | 'emoji' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card';
+export type MessageType = 'text' | 'image' | 'emoji' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'world_card';
 
 export interface Message {
     id: number;
@@ -2091,6 +2210,8 @@ export interface FullBackupData {
     vrPresets?: { key: string; name: string; prompt: string; blurb?: string }[]; // 剧院·用户自定义写作风格预设
     vrLetters?: VRLetter[];                    // 邮局信件（本地存档+队列）
     vrSettings?: any[];                        // 彼方设置（独立 API + 调用记录）
+    worlds?: WorldProfile[];                   // 家园·世界定义
+    worldEpisodes?: WorldEpisode[];            // 家园·演绎历史
     vrPostOffice?: Record<string, string>;     // 邮局本机配置：身份 deviceId / 后端地址（存 localStorage）
     songs?: SongSheet[]; // Songwriting app data
     

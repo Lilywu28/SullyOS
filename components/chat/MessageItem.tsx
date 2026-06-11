@@ -1492,6 +1492,70 @@ const MessageItem = React.memo(({
         return commonLayout(card);
     }
 
+    if (m.type === 'world_card') {
+        const md: any = m.metadata || {};
+        const timeStr = new Date(m.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        const narrative: string = md.narrative || '';
+        const panel: Record<string, any> = (md.statusPanel && typeof md.statusPanel === 'object') ? md.statusPanel : {};
+        const posts: string[] = Array.isArray(md.phonePosts) ? md.phonePosts : [];
+        const card = (
+            <div className="w-64">
+                <div
+                    className="rounded-xl overflow-hidden border border-emerald-300/40 shadow-[0_4px_16px_rgba(20,80,60,0.22)]"
+                    style={{ background: 'linear-gradient(155deg,#1d3b30 0%,#142921 100%)' }}
+                >
+                    {/* 头部：家园 · 世界名 · 剧情时间 */}
+                    <div className="px-3 pt-2.5 pb-2 flex items-center gap-2 border-b border-white/10">
+                        <span className="text-base leading-none text-emerald-200/80" style={{ filter: 'drop-shadow(0 0 5px rgba(150,255,200,.5))' }}>⌂</span>
+                        <div className="flex-1 min-w-0">
+                            <div className="text-[9px] tracking-[0.25em] text-emerald-300/80 font-bold uppercase">家园 · {md.storyTime || '生活记录'}</div>
+                            <div className="text-[12px] text-emerald-50 font-semibold truncate">{md.worldName || '共同世界'}</div>
+                        </div>
+                        <span className="text-[9px] text-emerald-300/60">{timeStr}</span>
+                    </div>
+                    {/* 行为描述 */}
+                    <div className="px-3 py-2.5">
+                        <p className="text-[11px] text-emerald-200/80 mb-1">
+                            <span className="font-bold text-amber-200">{charName || 'Ta'}</span>
+                            {md.location ? ` 在${md.location}` : ''}{md.mood ? ` · ${md.mood}` : ''}
+                        </p>
+                        {narrative && (
+                            <p className="text-[12px] leading-[1.55] text-emerald-50/90 whitespace-pre-wrap max-h-44 overflow-y-auto no-scrollbar">
+                                {narrative}
+                            </p>
+                        )}
+                        {/* 数值面板 */}
+                        {Object.keys(panel).length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                                {Object.entries(panel).map(([k, v]) => (
+                                    <span key={k} className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/10 text-emerald-100/90 border border-white/10">
+                                        {k} {String(v)}
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+                        {/* 发的动态 */}
+                        {posts.length > 0 && (
+                            <div className="mt-2 space-y-1">
+                                {posts.map((p, i) => (
+                                    <div key={i} className="text-[11px] leading-snug text-emerald-200/85 pl-2 border-l-2 border-amber-300/50">
+                                        {p}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    {/* 页脚 */}
+                    <div className="px-3 py-1.5 border-t border-white/10 flex items-center justify-between">
+                        <span className="text-[9px] text-emerald-300/60 italic">Ta 在那个世界的生活</span>
+                        <span className="text-[9px] text-amber-200/70 font-bold tracking-wide">＋记忆</span>
+                    </div>
+                </div>
+            </div>
+        );
+        return commonLayout(card);
+    }
+
     if (m.type === 'trpg_card') {
         const t: any = m.metadata?.trpg || {};
         const gameTitle: string = t.gameTitle || 'TRPG 跑团';
