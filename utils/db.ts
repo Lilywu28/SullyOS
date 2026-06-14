@@ -13,7 +13,7 @@ import {
 import { exportPostOfficeLocal, importPostOfficeLocal } from './vrWorld/postOffice';
 
 const DB_NAME = 'AetherOS_Data';
-const DB_VERSION = 63; // Bumped: v63 add worlds / world_episodes（家园·同世界观多角色大世界）
+const DB_VERSION = 64; // Bumped: v64 ensure worlds / world_episodes stores exist（v63 漏建：已到 v63 的库不会再触发 upgrade，补一版重建）
 
 const STORE_CHARACTERS = 'characters';
 const STORE_MESSAGES = 'messages';

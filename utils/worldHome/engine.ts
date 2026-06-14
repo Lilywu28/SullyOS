@@ -55,6 +55,15 @@ export interface WorldEpisodeResult {
 const genId = (p: string) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 const running = new Set<string>();
 
+/** 读家园全局 API（设置弹窗写入 localStorage 的 'world_home_api'；不设返回 null）。 */
+function readWorldHomeApiOverride(): { baseUrl: string; apiKey: string; model: string } | null {
+    try {
+        const s = typeof localStorage !== 'undefined' ? localStorage.getItem('world_home_api') : null;
+        const c = s ? JSON.parse(s) : null;
+        return c?.baseUrl ? c : null;
+    } catch { return null; }
+}
+
 export function isWorldRunning(worldId: string): boolean {
     return running.has(worldId);
 }
@@ -192,7 +201,9 @@ export async function runWorldEpisode(deps: WorldEpisodeDeps): Promise<WorldEpis
         .filter(Boolean) as CharacterProfile[];
     if (members.length === 0) return { ok: false, reason: 'no-members' };
 
-    const api = world.api?.baseUrl ? world.api : apiConfig;
+    // API 优先级：世界私有覆盖（旧数据）> 家园全局设置（localStorage）> 全局聊天默认
+    const worldHomeApi = readWorldHomeApiOverride();
+    const api = world.api?.baseUrl ? world.api : (worldHomeApi || apiConfig);
     if (!api.baseUrl) return { ok: false, reason: 'no-api' };
     const baseUrl = api.baseUrl.replace(/\/+$/, '');
 

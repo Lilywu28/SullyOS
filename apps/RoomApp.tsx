@@ -1056,92 +1056,91 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
     // SELECT SCREEN
     if (viewState === 'select') {
         return (
-            <div className="h-full w-full bg-slate-50 flex flex-col font-light">
-                <div className="pt-12 pb-3 px-6 bg-white sticky top-0 z-20 shrink-0">
-                    <div className="flex items-center justify-between h-12">
-                        <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-slate-100 active:scale-90 transition-transform">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
-                        </button>
-                        <span className="font-bold text-slate-700 text-lg tracking-wide">
-                            {homeTab === 'room' ? '拜访谁的房间?' : homeTab === 'pixelHome' ? '谁的像素家园?' : '家园 · 大世界'}
-                        </span>
-                        <div className="w-8"></div>
+            <div className="h-full w-full flex flex-col font-light relative overflow-hidden" style={{ background: 'linear-gradient(180deg,#0c1024 0%,#141031 45%,#1a1330 100%)' }}>
+                {/* 星点氛围 */}
+                <div className="absolute inset-0 pointer-events-none opacity-70" style={{ backgroundImage: 'radial-gradient(1px 1px at 12% 18%,rgba(255,255,255,.5),transparent),radial-gradient(1px 1px at 78% 12%,rgba(255,230,180,.5),transparent),radial-gradient(1.5px 1.5px at 40% 30%,rgba(207,226,255,.4),transparent),radial-gradient(1px 1px at 88% 40%,rgba(255,255,255,.4),transparent),radial-gradient(1px 1px at 24% 64%,rgba(255,255,255,.35),transparent),radial-gradient(1px 1px at 64% 78%,rgba(255,230,180,.35),transparent)' }} />
+
+                {/* 顶部：标题 + Tab */}
+                <div className="relative z-10 pt-12 px-6 shrink-0">
+                    <button onClick={closeApp} className="absolute left-4 top-12 p-2 rounded-full text-amber-100/70 hover:text-amber-100 active:scale-90 transition-all">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                    </button>
+                    <div className="text-center">
+                        <h1 className="text-[26px] text-amber-50 tracking-[0.15em]" style={{ fontFamily: `'Noto Serif SC',serif`, textShadow: '0 2px 18px rgba(180,160,255,.45)' }}>拜访谁的房间？</h1>
+                        <div className="flex items-center justify-center gap-2 mt-1.5">
+                            <span className="h-px w-10" style={{ background: 'linear-gradient(90deg,transparent,rgba(212,185,120,.55))' }} />
+                            <span className="text-[9px] tracking-[0.45em] text-amber-200/70 font-bold">✦ VISIT ROOM ✦</span>
+                            <span className="h-px w-10" style={{ background: 'linear-gradient(270deg,transparent,rgba(212,185,120,.55))' }} />
+                        </div>
                     </div>
-                    {/* Tab 切换：小小窝 / 家园 / 像素家园（三个独立分区；家园放前面，用得多） */}
-                    <div className="flex gap-1 mt-2.5 bg-slate-100 rounded-xl p-1">
+
+                    {/* Tab 栏：描金外框（家园点击直接进大世界，不再多一层封面） */}
+                    <div className="mt-5 rounded-2xl p-1.5 flex gap-1" style={{ background: 'rgba(255,255,255,.04)', border: '1px solid rgba(212,185,120,.25)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.06)' }}>
                         {([
                             { id: 'room', label: '🏠 小小窝' },
                             { id: 'worldHome', label: '🌍 家园' },
                             { id: 'pixelHome', label: '🎮 像素家园' },
-                        ] as const).map(tab => (
-                            <button key={tab.id}
-                                onClick={() => setHomeTab(tab.id)}
-                                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
-                                    homeTab === tab.id ? 'bg-white text-slate-700 shadow-sm' : 'text-slate-400 hover:text-slate-500'
-                                }`}
-                            >
-                                {tab.label}
-                            </button>
-                        ))}
+                        ] as const).map(tab => {
+                            const active = tab.id !== 'worldHome' && homeTab === tab.id;
+                            return (
+                                <button key={tab.id}
+                                    onClick={() => { if (tab.id === 'worldHome') openApp(AppID.WorldHome); else setHomeTab(tab.id); }}
+                                    className="relative flex-1 py-2.5 rounded-xl text-[12px] font-bold tracking-wide transition-all"
+                                    style={active
+                                        ? { background: 'linear-gradient(180deg,rgba(124,92,180,.5),rgba(80,60,140,.35))', color: '#f4ecff', border: '1px solid rgba(190,160,255,.4)', boxShadow: '0 0 18px rgba(150,110,220,.4)' }
+                                        : { color: 'rgba(220,215,240,.55)' }}>
+                                    {tab.label}
+                                    {active && <span className="absolute -bottom-[7px] left-1/2 -translate-x-1/2 w-2 h-2 rotate-45" style={{ background: '#b89cff', boxShadow: '0 0 8px #b89cff' }} />}
+                                </button>
+                            );
+                        })}
                     </div>
                 </div>
-                {homeTab === 'worldHome' ? (
-                    /* 家园分区：另一套体系（同世界观多角色共同生活的大世界），单独成区，点进去全屏打开 */
-                    <div className="p-5 overflow-y-auto pb-20 no-scrollbar">
-                        <button onClick={() => openApp(AppID.WorldHome)}
-                            className="w-full text-left rounded-3xl overflow-hidden shadow-[0_12px_34px_rgba(20,30,60,.28)] active:scale-[0.99] transition-transform border border-white/60">
-                            <div className="relative px-5 py-8" style={{ background: 'linear-gradient(150deg,#16203e 0%,#23315c 55%,#2c4a4f 100%)' }}>
-                                <div className="absolute inset-0 pointer-events-none animate-pulse" style={{ backgroundImage: 'radial-gradient(1.5px 1.5px at 18% 30%,#fff,transparent),radial-gradient(1px 1px at 70% 24%,#ffe9b0,transparent),radial-gradient(1.5px 1.5px at 44% 62%,#cfe2ff,transparent),radial-gradient(1px 1px at 86% 56%,#fff,transparent)' }} />
-                                <div className="relative">
-                                    <div className="text-[9px] font-black tracking-[0.4em] text-amber-300/80 uppercase">World · Home</div>
-                                    <div className="text-[27px] font-black text-white tracking-[0.18em] mt-1" style={{ textShadow: '0 2px 14px rgba(255,200,100,.25)' }}>家　园</div>
-                                    <p className="text-[11px] leading-[1.85] text-indigo-100/70 mt-2.5">
-                                        把同一世界观的角色放进一个世界，让他们在你不看的时候慢慢生活。
-                                        每次<b className="text-amber-200">观测</b>推进半天，每个角色独立演绎，绝不上帝视角。
-                                    </p>
-                                    <span className="inline-flex items-center gap-1.5 mt-4 px-4 py-2 rounded-full bg-amber-400 text-amber-950 text-[12px] font-black shadow-lg">走进家园 →</span>
-                                </div>
-                            </div>
-                        </button>
-                        <p className="text-[10.5px] text-slate-400 leading-relaxed mt-3.5 px-1">
-                            家园和「房间 / 像素家园」是两套独立的玩法：这里管理的是多角色共同生活的大世界，不绑定单个角色。
-                        </p>
-                    </div>
-                ) : (
-                    <div className="px-5 pt-3 overflow-y-auto pb-20 no-scrollbar">
-                        <p className="text-[11px] text-slate-400 mb-3 px-1 leading-relaxed">
-                            {homeTab === 'room'
-                                ? '走进谁的房间，看看 ta 此刻在做什么、翻翻屋里的小物件。'
-                                : '像素风的家——自由装修、布置房间、潜入记忆。'}
-                        </p>
-                        {characters.length === 0 ? (
-                            <div className="text-center text-slate-400 text-[12px] py-16">还没有角色，先去「神经链接」创建一个吧。</div>
-                        ) : (
-                            <div className="grid grid-cols-2 gap-3.5">
-                                {characters.map(c => {
-                                    const pixel = homeTab === 'pixelHome';
-                                    return (
-                                        <button key={c.id} onClick={() => {
-                                            if (pixel) { setActiveCharacterId(c.id); setViewState('pixelHome'); }
-                                            else { handleEnterRoom(c); }
-                                        }} className="group relative bg-white rounded-2xl shadow-sm border border-slate-100 pt-14 pb-4 px-3 flex flex-col items-center gap-1.5 active:scale-95 transition-all hover:shadow-md hover:-translate-y-0.5 overflow-hidden">
-                                            {/* 顶部分区色带 */}
-                                            <div className="absolute inset-x-0 top-0 h-14" style={{ background: pixel ? 'linear-gradient(135deg,#6366f1,#8b5cf6)' : 'linear-gradient(135deg,#fb7185,#f472b6)' }} />
-                                            <div className="absolute top-5 left-1/2 -translate-x-1/2 w-[68px] h-[68px] rounded-full p-1 bg-white shadow-md">
-                                                <img src={c.avatar} className="w-full h-full rounded-full object-cover" />
-                                                <div className="absolute bottom-0 right-0 w-6 h-6 bg-white rounded-full shadow flex items-center justify-center text-[12px]">
-                                                    {pixel ? '🎮' : '🏠'}
-                                                </div>
+
+                {/* 描述 */}
+                <p className="relative z-10 text-center text-[11px] text-amber-100/45 mt-4 px-8 leading-relaxed">
+                    {homeTab === 'pixelHome' ? '像素风的家——自由装修、布置房间、潜入记忆。' : '走进谁的房间，看看 ta 此刻在做什么、翻翻屋里的小物件。'}
+                </p>
+
+                {/* 角色网格 */}
+                <div className="relative z-10 flex-1 overflow-y-auto no-scrollbar px-5 pt-4 pb-4">
+                    {characters.length === 0 ? (
+                        <div className="text-center text-amber-100/40 text-[12px] py-16">还没有角色，先去「神经链接」创建一个吧。</div>
+                    ) : (
+                        <div className="grid grid-cols-2 gap-4">
+                            {characters.map(c => {
+                                const pixel = homeTab === 'pixelHome';
+                                return (
+                                    <button key={c.id} onClick={() => { if (pixel) { setActiveCharacterId(c.id); setViewState('pixelHome'); } else handleEnterRoom(c); }}
+                                        className="group relative rounded-2xl px-3 pt-7 pb-5 flex flex-col items-center active:scale-95 transition-all overflow-hidden"
+                                        style={{ background: 'linear-gradient(180deg,rgba(62,54,100,.55),rgba(28,24,52,.6))', border: '1px solid rgba(200,180,255,.14)', boxShadow: '0 8px 24px rgba(0,0,0,.35)' }}>
+                                        {/* 四角描金边框 */}
+                                        <span className="absolute top-1.5 left-1.5 w-3.5 h-3.5 border-t border-l rounded-tl" style={{ borderColor: 'rgba(212,185,120,.5)' }} />
+                                        <span className="absolute top-1.5 right-1.5 w-3.5 h-3.5 border-t border-r rounded-tr" style={{ borderColor: 'rgba(212,185,120,.5)' }} />
+                                        <span className="absolute bottom-1.5 left-1.5 w-3.5 h-3.5 border-b border-l rounded-bl" style={{ borderColor: 'rgba(212,185,120,.5)' }} />
+                                        <span className="absolute bottom-1.5 right-1.5 w-3.5 h-3.5 border-b border-r rounded-br" style={{ borderColor: 'rgba(212,185,120,.5)' }} />
+                                        {/* 头像 + 双层装饰环 */}
+                                        <div className="relative w-[88px] h-[88px] flex items-center justify-center">
+                                            <div className="absolute inset-0 rounded-full" style={{ border: '1px solid rgba(212,185,120,.35)' }} />
+                                            <div className="absolute inset-[5px] rounded-full" style={{ border: '1px solid rgba(212,185,120,.18)' }} />
+                                            <div className="w-[72px] h-[72px] rounded-full overflow-hidden" style={{ boxShadow: '0 0 16px rgba(150,120,220,.4)' }}>
+                                                <img src={c.avatar} className="w-full h-full object-cover" alt={c.name} />
                                             </div>
-                                            <span className="font-bold text-slate-700 text-sm mt-1">{c.name}</span>
-                                            <span className="text-[10px] text-slate-400">{pixel ? '进 ta 的像素家园' : '拜访 ta 的房间'}</span>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        )}
-                    </div>
-                )}
+                                            <div className="absolute bottom-0 right-1 w-6 h-6 rounded-full flex items-center justify-center text-[11px]" style={{ background: '#241d3e', border: '1px solid rgba(212,185,120,.3)' }}>{pixel ? '🎮' : '🏠'}</div>
+                                        </div>
+                                        <span className="mt-3 text-[14px] text-amber-50 font-semibold tracking-wide" style={{ fontFamily: `'Noto Serif SC',serif` }}>{c.name}</span>
+                                        <span className="mt-0.5 text-[10px] text-amber-100/40">{pixel ? '进 ta 的像素家园' : '拜访 ta 的房间'}</span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+
+                {/* 底部装饰 */}
+                <div className="relative z-10 shrink-0 pb-4 flex items-center justify-center gap-2.5 text-[8.5px] tracking-[0.35em] text-amber-200/35 font-bold">
+                    <span>EXPLORE</span><span className="text-amber-200/20">◆</span><span>CONNECT</span><span className="text-amber-200/20">◆</span><span>DISCOVER</span>
+                </div>
             </div>
         );
     }
