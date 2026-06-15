@@ -804,7 +804,10 @@ export const useChatAI = ({
             // 300s 超时兜底，返回时 push 已落库（或失败）。外层 finally 统一清 isTyping /
             // KeepAlive / 跑 memory palace 后处理，与本地路径完全对齐。
             // worker 端跑完 LLM → push → SW → activeMsgRuntime.flushInboxToChat 写 DB 并刷 UI。
-            if (isInstantConfigReady()) {
+            // 瑞幸聊天点单 / 麦当劳 / 瑞幸小程序 这些"客户端工具循环"模式必须走本地 fetch:
+            // instant push 会把请求交给 worker 并在这里提前 return, 工具循环(callLuckinTool 等)根本跑不到,
+            // 表现就是"选了城市也没用 / 角色不下单"。这些模式下跳过 instant push, 用本地 fetch 跑工具循环。
+            if (isInstantConfigReady() && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive) {
                 const instantResult = await sendInstantPushAndAwaitReply({
                     contactName: char.name,
                     messages: fullMessages as InstantPushPayload['messages'],
