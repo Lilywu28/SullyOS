@@ -5,6 +5,7 @@ import { safeFetchJson } from '../utils/safeApi';
 import { minimaxFetch } from '../utils/minimaxEndpoint';
 import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
 import { hashTtsParams, getCachedTts, saveCachedTts } from '../utils/ttsCache';
+import { cleanTextForTts, insertSpeechBreaks, convertHexAudioToBlob, fetchRemoteAudioBlob, VALID_EMOTIONS } from '../utils/minimaxTts';
 import { ContextBuilder } from '../utils/context';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { RealtimeContextManager } from '../utils/realtimeContext';
@@ -42,135 +43,22 @@ const summarizeKeepsakeLine = (transcript: CallBubble[], charName: string) => {
   const polished = sentence.length > 48 ? `${sentence.slice(0, 48)}…` : sentence;
   return `“${polished}” —— ${charName}`;
 };
+// Emotion the AI may declare at the very start of a call reply, e.g. "[happy] 喂？".
+// Parsed BEFORE sanitize (which strips the token), then fed to MiniMax voice_setting.emotion.
+const LEADING_EMOTION_RE = /^\s*[\[【]\s*(happy|sad|angry|fearful|disgusted|surprised|calm|fluent)\s*[\]】]\s*/i;
+const extractLeadingEmotion = (raw: string): string | undefined => {
+  const m = (raw || '').match(LEADING_EMOTION_RE);
+  return m ? m[1].toLowerCase() : undefined;
+};
 const sanitizeAssistantOutput = (raw: string) => {
   if (!raw) return '';
   return raw
+    .replace(LEADING_EMOTION_RE, '')
     .replace(/^\s*(?:\[\s*通话\s*\]\s*)+/gim, '')
     .replace(/^\s*(?:\[\s*(?:聊天|约会)\s*\]\s*)+/gim, '')
     .replace(/^\s*\[?\d{1,2}:\d{2}(?::\d{2})?\]?\s*/gm, '')
     .replace(/^\s*\[?\d{4}[\/-]\d{1,2}[\/-]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\]?\s*/gm, '')
     .replace(/^\s*时间戳[:：].*$/gim, '')
-    .trim();
-};
-/** 中文舞台指示 → MiniMax 语气词标签映射 */
-const NARRATION_TO_INTERJECTION: Record<string, string> = {
-  '轻笑': '(chuckle)', '笑': '(laughs)', '笑声': '(laughs)', '大笑': '(laughs)',
-  '叹气': '(sighs)', '叹息': '(sighs)',
-  '咳嗽': '(coughs)', '咳': '(coughs)',
-  '清嗓': '(clear-throat)', '清嗓子': '(clear-throat)',
-  '呻吟': '(groans)', '哼': '(groans)',
-  '换气': '(breath)', '呼吸': '(breath)',
-  '喘气': '(pant)', '喘': '(pant)',
-  '吸气': '(inhale)', '深吸一口气': '(inhale)',
-  '呼气': '(exhale)',
-  '倒吸气': '(gasps)', '倒吸一口气': '(gasps)',
-  '吸鼻子': '(sniffs)',
-  '喷鼻息': '(snorts)',
-  '咂嘴': '(lip-smacking)',
-  '哼唱': '(humming)',
-  '嘶': '(hissing)',
-  '嗯': '(emm)', '呃': '(emm)',
-  '啧': '(lip-smacking)', '啧啧': '(lip-smacking)',
-  '咕噜': '(groans)', '咕噜咕噜': '(groans)',
-  '嘟囔': '(emm)', '嘀咕': '(emm)',
-  '嘘': '(hissing)', '嘘嘘': '(hissing)',
-  '哇': '(gasps)', '哇哦': '(gasps)',
-  '嗷': '(groans)', '嗷嗷': '(groans)',
-  '呜': '(groans)', '呜呜': '(groans)',
-  '嘤': '(groans)', '嘤嘤': '(groans)',
-  '噗': '(snorts)', '噗嗤': '(snorts)',
-  '啊': '(gasps)',
-  '唔': '(emm)',
-};
-/** 裸拟声词 → 语气词标签（仅处理 TTS 无法自然发音的词，避免误伤正常用词） */
-const BARE_ONOMATOPOEIA: [RegExp, string][] = [
-  [/啧啧啧/g, '(lip-smacking)'],
-  [/啧啧/g, '(lip-smacking)'],
-  [/啧/g, '(lip-smacking)'],
-  [/咕噜咕噜/g, '(groans)'],
-  [/咕噜/g, '(groans)'],
-  [/嘤嘤嘤/g, '(groans)'],
-  [/嘤嘤/g, '(groans)'],
-  [/噗嗤/g, '(snorts)'],
-  [/噗/g, '(snorts)'],
-  [/嘁/g, '(snorts)'],
-  [/嘘—*/g, '(hissing)'],
-  [/哼哼/g, '(groans)'],
-];
-// MiniMax 支持的合法语气标签 — 这些必须保留，不能被当作舞台指示砍掉
-const VALID_INTERJECTION_TAGS = new Set([
-  'chuckle', 'laughs', 'sighs', 'coughs', 'clear-throat', 'groans',
-  'breath', 'pant', 'inhale', 'exhale', 'gasps', 'sniffs', 'snorts',
-  'lip-smacking', 'humming', 'hissing', 'emm',
-]);
-/** 清理 <语音> 标签内的内容：映射中文舞台指示 → 语气标签，删除不认识的括号描述 */
-const cleanVoiceTagContent = (voiceText: string): string => {
-  if (!voiceText) return '';
-  let result = voiceText
-    // 中文括号：先尝试映射，映射不到就删
-    .replace(/（([^（）\n]{1,48})）/g, (_match, cue: string) => {
-      const trimmed = cue.trim();
-      if (NARRATION_TO_INTERJECTION[trimmed]) return NARRATION_TO_INTERJECTION[trimmed];
-      for (const [key, tag] of Object.entries(NARRATION_TO_INTERJECTION)) {
-        if (trimmed.includes(key)) return tag;
-      }
-      return ''; // 无法映射 → 删除
-    })
-    // 西文括号：保留合法语气标签，删除其他
-    .replace(/\(([^)]{1,80})\)/g, (_match, inner: string) => {
-      const tag = inner.trim().toLowerCase();
-      if (VALID_INTERJECTION_TAGS.has(tag)) return `(${tag})`;
-      return ''; // 不是合法标签 → 删除（如"背景有电流杂音"）
-    });
-  // 裸拟声词替换
-  for (const [pattern, tag] of BARE_ONOMATOPOEIA) {
-    result = result.replace(pattern, tag);
-  }
-  return result.replace(/\s+/g, ' ').trim();
-};
-const convertNarrationCues = (raw: string) => {
-  if (!raw) return '';
-  let result = raw
-    .replace(/<[语語]音>[\s\S]*?<\/[语語]音>/g, '')
-    .replace(/（([^（）\n]{1,48})）/g, (_match, cue: string) => {
-      const trimmed = cue.trim();
-      // 直接匹配
-      if (NARRATION_TO_INTERJECTION[trimmed]) return NARRATION_TO_INTERJECTION[trimmed];
-      // 模糊匹配：舞台指示包含关键词
-      for (const [key, tag] of Object.entries(NARRATION_TO_INTERJECTION)) {
-        if (trimmed.includes(key)) return tag;
-      }
-      // 无法映射的舞台指示直接删除（避免 TTS 朗读）
-      return '';
-    });
-  // 裸拟声词替换（非括号内的拟声词）
-  for (const [pattern, tag] of BARE_ONOMATOPOEIA) {
-    result = result.replace(pattern, tag);
-  }
-  return result.replace(/\s+/g, ' ').trim();
-};
-/** 为 TTS 文本插入 MiniMax 原生停顿标签 <#秒数#>，让语音有自然停顿
- *  注意：停顿值不宜过大，过大会导致混合声线（timber_weights）在各段产生不同混合效果 */
-const insertSpeechBreaks = (text: string): string => {
-  if (!text) return '';
-  return text
-    // 省略号 → 短停顿（思考 / 犹豫）
-    .replace(/[…]{1,}/g, '…<#0.15#>')
-    .replace(/\.{3,}/g, '...<#0.15#>')
-    .replace(/。{2,}/g, '。<#0.15#>')
-    // 破折号 → 微停顿（话题转折）
-    .replace(/——/g, '——<#0.1#>')
-    .replace(/--/g, '--<#0.1#>')
-    // 句末标点 → 微停顿（句间呼吸）— 仅中文句号和感叹/问号
-    .replace(/([。！？])/g, '$1<#0.08#>')
-    // 英文句末标点不加停顿（TTS 自身已有节奏）
-    // 分号 → 不加停顿（太细碎）
-    // 清理多余的连续停顿标签（避免叠加）
-    .replace(/(<#[\d.]+#>[\s]*){2,}/g, (match) => {
-      const times = [...match.matchAll(/<#([\d.]+)#>/g)].map(m => parseFloat(m[1]));
-      const maxTime = Math.min(Math.max(...times), 0.2);
-      return `<#${maxTime}#>`;
-    })
     .trim();
 };
 const VOICE_LANG_OPTIONS = [
@@ -183,34 +71,15 @@ const VOICE_LANG_OPTIONS = [
   { value: 'de', label: 'Deutsch' },
   { value: 'ru', label: 'Русский' },
 ];
-/** 从 AI 回复中提取 <语音>…</语音> 标签内容（兼容繁体 語音） */
-const extractVoiceTag = (text: string): { display: string; speech: string; voiceText: string } => {
-  const match = text.match(/<[语語]音>([\s\S]*?)<\/[语語]音>/);
-  if (!match) return { display: text, speech: '', voiceText: '' };
-  const voiceText = match[1].trim();
-  const display = text.replace(/<[语語]音>[\s\S]*?<\/[语語]音>/g, '').trim();
-  return { display, speech: voiceText, voiceText };
-};
-const convertHexAudioToBlob = (hexAudio: string, mimeType = 'audio/mpeg'): Blob => {
-  const cleanHex = hexAudio.trim().replace(/^0x/i, '');
-  if (!cleanHex || cleanHex.length % 2 !== 0 || /[^\da-f]/i.test(cleanHex)) {
-    throw new Error('MiniMax 返回的 HEX 音频数据格式异常');
-  }
-  const bytes = new Uint8Array(cleanHex.length / 2);
-  for (let i = 0; i < cleanHex.length; i += 2) {
-    bytes[i / 2] = Number.parseInt(cleanHex.slice(i, i + 2), 16);
-  }
-  return new Blob([bytes], { type: mimeType });
-};
-const fetchRemoteAudioBlob = async (sourceUrl: string): Promise<Blob> => {
-  const cacheBustedUrl = sourceUrl.includes('?')
-    ? `${sourceUrl}&_ts=${Date.now()}`
-    : `${sourceUrl}?_ts=${Date.now()}`;
-  const response = await fetch(cacheBustedUrl, { cache: 'no-store' });
-  if (!response.ok) throw new Error(`音频下载失败（HTTP ${response.status}）`);
-  const blob = await response.blob();
-  if (!blob.size) throw new Error('音频下载为空文件');
-  return blob;
+/** 从 AI 回复中提取 <语音 emotion="…">…</语音> 标签内容 + emotion（兼容繁体 語音、无属性） */
+const extractVoiceTag = (text: string): { display: string; speech: string; voiceText: string; emotion?: string } => {
+  const match = text.match(/<[语語]音(?:\s+emotion\s*=\s*["']?([a-zA-Z]+)["']?)?\s*>([\s\S]*?)<\/[语語]音>/);
+  if (!match) return { display: text, speech: '', voiceText: '', emotion: undefined };
+  const rawEmotion = (match[1] || '').trim().toLowerCase();
+  const emotion = VALID_EMOTIONS.has(rawEmotion) ? rawEmotion : undefined;
+  const voiceText = match[2].trim();
+  const display = text.replace(/<[语語]音[^>]*>[\s\S]*?<\/[语語]音>/g, '').trim();
+  return { display, speech: voiceText, voiceText, emotion };
 };
 // Derive the shared TTS cache key from the MiniMax payload. Must match the
 // key used by `synthesizeSpeechDetailed` so chat/date/call can reuse each
@@ -302,7 +171,7 @@ const buildCallPrompt = (userName: string, charName?: string, coreContext?: stri
 ✅ 要这样——有自己的节奏，像真人一样不完美：
 “嘶……你刚说的那个，等一下。”
 “……好吧确实挺离谱的。”
-“（轻笑）我刚差点把咖啡洒了，你别逗我。”
+“(chuckle) 我刚差点把咖啡洒了，你别逗我。”
 “说真的，今天有件事我还挺想跟你说的——但你先说完你那个。”
 
 ### 你能感受到对方
@@ -322,10 +191,22 @@ const buildCallPrompt = (userName: string, charName?: string, coreContext?: stri
 聊得来的时候可以说多一点，没必要每次都控制字数。
 关键是：**让对方觉得你真的在听、真的在聊，而不是在执行对话任务。**
 
-### 舞台指示（给前端用，不要念出来）
+### 让声音有情绪（重要——直接写进文本，不要靠旁白）
 
-偶尔可以加一个简短的括号描述你的状态——（轻笑）（叹气）（压低声音）（沉默了一下）。
-最多一条消息一个。不要写成小说旁白：”（我靠在椅背上，嘴角微微上扬，目光看向远方……）”——这不是你会在电话里说的。
+你的话会被转成真实语音，所以**情绪和语气要由你自己标出来**，不要写中文舞台指示（系统不会朗读它们，只会被删掉）。两种工具：
+
+1) **行首情绪**（可选）：如果这句话有明显情绪，在最开头加一个标签设定整句的语气，只能从这些里选一个：
+\`[happy] [sad] [angry] [fearful] [disgusted] [surprised] [calm] [fluent]\`
+   例：\`[happy] 诶你终于打来啦！\`  /  \`[sad] ……我今天其实挺不好受的。\`
+   情绪不强烈就别加，平淡的话不用标。
+
+2) **句中语气声**：想要笑声、叹气、喘息这种真实的口头反应时，直接写官方英文标签（会被真实演绎出来），**别写中文的（轻笑）（叹气）**：
+\`(chuckle) (laughs) (sighs) (coughs) (clear-throat) (groans) (breath) (pant) (inhale) (exhale) (gasps) (sniffs) (snorts) (lip-smacking) (humming) (hissing) (emm)\`
+   例：\`(chuckle) 你别逗我了……(sighs) 算了，听你的。\`
+
+注意：
+- 语气标签要克制，一两句话最多一个，太多会很假很吵。
+- 不要写小说式中文旁白，如”（我靠在椅背上，目光看向远方）”——这种会被直接删掉，等于白写。
 
 ### 底线
 
@@ -336,20 +217,20 @@ const buildCallPrompt = (userName: string, charName?: string, coreContext?: stri
 用户开启了语音语种功能，选择的语种是：${langLabel}（${voiceLang}）。
 
 你的回复格式必须是：
-1. 先用中文自然地写出你要说的话（包括舞台指示）
-2. 然后换行，在 <语音> 标签里写出这句话的${langLabel}翻译——这才是真正会被读出来的部分
+1. 先用中文自然地写出你要说的话（给对方看的文字，中文舞台指示写在这里没关系）
+2. 然后换行，在 <语音> 标签里写出这句话的${langLabel}翻译——这才是真正会被读出来的部分。可选地用 emotion 属性标整句情绪：\`<语音 emotion="happy">…</语音>\`（情绪只能取 happy/sad/angry/fearful/disgusted/surprised/calm/fluent）
 
 示例：
-啊，我知道了（轻笑）
-<语音>Ok, I get it</语音>
+啊，我知道了
+<语音 emotion="happy">Ok, I get it (chuckle)</语音>
 
-嘶……你说真的？那也太离谱了吧。
-<语音>Wait... are you serious? That's insane.</语音>
+你说真的？那也太离谱了吧。
+<语音 emotion="surprised">Wait... are you serious? That's insane.</语音>
 
 要求：
 - <语音> 里的翻译要自然口语化，不要机翻味，要符合你的角色性格
-- <语音> 里不要包含舞台指示，只写会被朗读的文字
-- 每条消息只有一个 <语音> 标签
+- <语音> 里只写会被朗读的文字；想要笑/叹气等真实语气，用官方英文标签 (laughs)/(sighs)/(chuckle) 等，**不要写中文（轻笑）**，也不要写中文舞台旁白
+- 每条消息只有一个 <语音> 标签，emotion 属性可选；情绪不强就别加
 - 中文部分和 <语音> 部分表达的意思要一致` : '';
   return [coreContext, timeContext, callPrompt, voiceLangPrompt].filter(Boolean).join('\n\n');
 };
@@ -438,14 +319,17 @@ const CallApp: React.FC = () => {
     }
     return extras;
   };
-  const resolveVoiceSettingFields = () => {
+  const resolveVoiceSettingFields = (emotionOverride?: string) => {
     const vp = selectedChar?.voiceProfile;
+    // Per-utterance emotion from <语音 emotion="…"> wins over the static voiceProfile emotion.
+    const emotion = (emotionOverride && VALID_EMOTIONS.has(emotionOverride)) ? emotionOverride : (vp?.emotion || '');
     return {
       // Clamp speed & pitch to safe human-like ranges
       speed: Math.max(0.75, Math.min(1.4, vp?.speed ?? 1)),
       vol: Math.max(0.3, Math.min(2, vp?.vol ?? 1)),
       pitch: Math.max(-8, Math.min(8, vp?.pitch ?? 0)),
-      ...(vp?.emotion ? { emotion: vp.emotion } : {}),
+      english_normalization: true,
+      ...(emotion ? { emotion } : {}),
     };
   };
   // Resume from suspended call — restore bubbles & session state
@@ -486,7 +370,9 @@ const CallApp: React.FC = () => {
       try {
         setCallStartedAt(Date.now());
         setCallState('connecting');
-        const greetingText = sanitizeAssistantOutput(await requestAssistantReply('（电话刚接通。你先开口——像平时接到这个人电话一样自然地说第一句话。不要解释你在做什么，就是最自然的那个"喂"或者"诶"或者别的什么。）'));
+        const rawGreeting = await requestAssistantReply('（电话刚接通。你先开口——像平时接到这个人电话一样自然地说第一句话。不要解释你在做什么，就是最自然的那个"喂"或者"诶"或者别的什么。）');
+        const greetingLeadEmotion = extractLeadingEmotion(rawGreeting);
+        const greetingText = sanitizeAssistantOutput(rawGreeting);
         const nowTs = Date.now();
         const greetingBubble: CallBubble = { id: `${nowTs}-greeting`, role: 'assistant', text: greetingText, time: formatTime(), timestamp: nowTs };
         setCallState('speaking');
@@ -503,15 +389,14 @@ const CallApp: React.FC = () => {
         if (isSpeakerOn && minimaxApiKey && (voiceId || hasTimberWeights)) {
           try {
             const groupId = resolveGroupId();
-            const { speech: greetingVoiceTag } = extractVoiceTag(greetingText);
-            const cleanedGreetingVoice = greetingVoiceTag ? cleanVoiceTagContent(greetingVoiceTag) : '';
-            const speechText = insertSpeechBreaks(cleanedGreetingVoice || convertNarrationCues(greetingText));
+            const greetingEmotion = extractVoiceTag(greetingText).emotion || greetingLeadEmotion;
+            const speechText = insertSpeechBreaks(cleanTextForTts(greetingText));
             const model = resolveModel();
             const ttsPayload: any = {
               model, text: speechText, stream: false, output_format: 'url',
-              voice_setting: { voice_id: voiceId, ...resolveVoiceSettingFields() },
+              voice_setting: { voice_id: voiceId, ...resolveVoiceSettingFields(greetingEmotion) },
               audio_setting: { format: 'mp3', sample_rate: 32000, bitrate: 128000, channel: 1 },
-              ...(voiceLang ? { language_boost: voiceLang } : {}),
+              language_boost: voiceLang || 'auto',
               ...buildTtsExtras(),
             };
             if (groupId) ttsPayload.group_id = groupId;
@@ -740,9 +625,12 @@ const CallApp: React.FC = () => {
     setTraceId('');
     setErrorMessage('');
     let assistantText = '';
+    let turnLeadEmotion: string | undefined;
     try {
       setCallState('thinking');
-      assistantText = sanitizeAssistantOutput(await requestAssistantReply(input, userDbId));
+      const rawReply = await requestAssistantReply(input, userDbId);
+      turnLeadEmotion = extractLeadingEmotion(rawReply);
+      assistantText = sanitizeAssistantOutput(rawReply);
     } catch (err: any) {
       setErrorMessage(err?.message || '文本回复失败');
       setCallState('error');
@@ -767,9 +655,8 @@ const CallApp: React.FC = () => {
     }
     try {
       const groupId = resolveGroupId();
-      const { speech: voiceTagText } = extractVoiceTag(assistantText);
-      const cleanedVoiceTag = voiceTagText ? cleanVoiceTagContent(voiceTagText) : '';
-      const speechText = insertSpeechBreaks(cleanedVoiceTag || convertNarrationCues(assistantText));
+      const turnEmotion = extractVoiceTag(assistantText).emotion || turnLeadEmotion;
+      const speechText = insertSpeechBreaks(cleanTextForTts(assistantText));
       const model = resolveModel();
       if (!speechText.trim()) throw new Error('可朗读文本为空');
 
@@ -779,9 +666,9 @@ const CallApp: React.FC = () => {
           text: chunk,
           stream: false,
           output_format: 'url',
-          voice_setting: { voice_id: voiceId, ...resolveVoiceSettingFields() },
+          voice_setting: { voice_id: voiceId, ...resolveVoiceSettingFields(turnEmotion) },
           audio_setting: { format: 'mp3', sample_rate: 32000, bitrate: 128000, channel: 1 },
-          ...(voiceLang ? { language_boost: voiceLang } : {}),
+          language_boost: voiceLang || 'auto',
           ...buildTtsExtras(),
         };
         if (groupId) ttsPayload.group_id = groupId;
@@ -963,7 +850,9 @@ const CallApp: React.FC = () => {
     try {
       setRerollingBubbleId(bubble.id);
       setCallState('thinking');
-      const rerolled = sanitizeAssistantOutput(await requestAssistantReply(prevUser.text, bubble.dbId));
+      const rawReroll = await requestAssistantReply(prevUser.text, bubble.dbId);
+      const rerollLeadEmotion = extractLeadingEmotion(rawReroll);
+      const rerolled = sanitizeAssistantOutput(rawReroll);
       setBubbles(prev => prev.map(b => b.id === bubble.id ? { ...b, text: rerolled, audioUrl: undefined } : b));
       if (bubble.dbId) await DB.updateMessage(bubble.dbId, rerolled);
       addToast('台词已重 roll', 'success');
@@ -976,16 +865,15 @@ const CallApp: React.FC = () => {
         try {
           setCallState('speaking');
           const groupId = resolveGroupId();
-          const { speech: voiceTagText } = extractVoiceTag(rerolled);
-          const cleanedVoiceTag = voiceTagText ? cleanVoiceTagContent(voiceTagText) : '';
-          const speechText = insertSpeechBreaks(cleanedVoiceTag || convertNarrationCues(rerolled));
+          const rerollEmotion = extractVoiceTag(rerolled).emotion || rerollLeadEmotion;
+          const speechText = insertSpeechBreaks(cleanTextForTts(rerolled));
           if (speechText.trim()) {
             const model = resolveModel();
             const ttsPayload: any = {
               model, text: speechText, stream: false, output_format: 'url',
-              voice_setting: { voice_id: voiceId, ...resolveVoiceSettingFields() },
+              voice_setting: { voice_id: voiceId, ...resolveVoiceSettingFields(rerollEmotion) },
               audio_setting: { format: 'mp3', sample_rate: 32000, bitrate: 128000, channel: 1 },
-              ...(voiceLang ? { language_boost: voiceLang } : {}),
+              language_boost: voiceLang || 'auto',
               ...buildTtsExtras(),
             };
             if (groupId) ttsPayload.group_id = groupId;
