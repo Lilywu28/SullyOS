@@ -208,7 +208,7 @@ const ACTION_TILES: Record<string, { color: string; bbox: [number, number, numbe
   archive: { color: '#B77DEE', bbox: [21, 24, 79, 77], glyph: bookGlyph2 },
   settings: { color: '#9A835A', bbox: [20, 28, 80, 78], glyph: slidersGlyph },
   image: { color: '#82D5BB', bbox: [17, 25, 83, 79], glyph: camGlyph('#FC736D') },
-  regenerate: { color: '#889DF0', bbox: [18, 24, 60, 76], glyph: refreshGlyph },
+  regenerate: { color: '#889DF0', bbox: [22, 25, 76, 77], glyph: refreshGlyph },
   proactive: { color: '#8AC68A', bbox: [9, 24, 91, 72], glyph: chatGlyph },
   schedule: { color: '#FC736D', bbox: [22, 20, 78, 80], glyph: calGlyph },
 };
