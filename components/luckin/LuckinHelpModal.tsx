@@ -8,9 +8,9 @@ import React from 'react';
 const LuckinHelpModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open, onClose }) => {
     if (!open) return null;
     return (
-        <div className="fixed inset-0 z-[70] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
-            <div className="bg-gradient-to-b from-[#FAF7F0] to-[#F3EFE6] w-full sm:max-w-sm rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col" style={{ maxHeight: '85vh' }} onClick={e => e.stopPropagation()}>
-                <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-[#0B1F3A] to-[#1E4D8C] sm:rounded-t-2xl shrink-0">
+        <div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+            <div className="bg-gradient-to-b from-[#FAF7F0] to-[#F3EFE6] w-full sm:max-w-sm rounded-2xl overflow-hidden shadow-2xl flex flex-col" style={{ maxHeight: 'calc(100dvh - var(--safe-top) - var(--safe-bottom) - 2rem)' }} onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-[#0B1F3A] to-[#1E4D8C] rounded-t-2xl shrink-0">
                     <div className="flex items-center gap-2">
                         <span className="text-xl">🦌</span>
                         <div>
@@ -52,7 +52,7 @@ const LuckinHelpModal: React.FC<{ open: boolean; onClose: () => void }> = ({ ope
                     <div className="text-[10px] text-slate-400 text-center pt-1">下单 / 支付都在最后那张「结账卡」上点, 商品卡只是 ta 给你看的</div>
                 </div>
 
-                <div className="border-t border-[#DDD3BC] bg-gradient-to-r from-[#EFE9DC] to-[#E7DFC9] px-3 py-2.5 shrink-0" style={{ paddingBottom: 'calc(0.625rem + var(--safe-bottom))' }}>
+                <div className="border-t border-[#DDD3BC] bg-gradient-to-r from-[#EFE9DC] to-[#E7DFC9] px-3 py-2.5 shrink-0">
                     <button onClick={onClose} className="w-full px-3 py-2.5 bg-[#0B1F3A] text-white text-[13px] font-bold rounded-xl active:scale-95">知道啦, 开点</button>
                 </div>
             </div>

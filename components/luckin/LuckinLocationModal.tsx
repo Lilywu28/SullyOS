@@ -49,9 +49,9 @@ const LuckinLocationModal: React.FC<{
     };
 
     return (
-        <div className="fixed inset-0 z-[70] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
-            <div className="bg-gradient-to-b from-[#FAF7F0] to-[#F3EFE6] w-full sm:max-w-sm rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col" style={{ maxHeight: '80vh' }} onClick={e => e.stopPropagation()}>
-                <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-[#0B1F3A] to-[#1E4D8C] sm:rounded-t-2xl">
+        <div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+            <div className="bg-gradient-to-b from-[#FAF7F0] to-[#F3EFE6] w-full sm:max-w-sm rounded-2xl overflow-hidden shadow-2xl flex flex-col" style={{ maxHeight: 'calc(100dvh - var(--safe-top) - var(--safe-bottom) - 2rem)' }} onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-[#0B1F3A] to-[#1E4D8C] rounded-t-2xl">
                     <div className="flex items-center gap-2">
                         <span className="text-xl">🦌</span>
                         <div>
@@ -62,7 +62,7 @@ const LuckinLocationModal: React.FC<{
                     <button onClick={onClose} className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-white active:scale-90">✕</button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-3 space-y-3" style={{ paddingBottom: 'calc(0.75rem + var(--safe-bottom))' }}>
+                <div className="flex-1 overflow-y-auto p-3 space-y-3">
                     <button onClick={useGeo} disabled={locating}
                         className="w-full p-3 rounded-xl bg-white border border-[#E6DFCF] text-[13px] font-bold text-[#0B1F3A] active:scale-[0.98] disabled:opacity-60">
                         {locating ? '定位中…' : '📡 用我的定位'}
