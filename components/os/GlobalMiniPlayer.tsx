@@ -11,9 +11,9 @@ import { Play, Pause, SkipForward, SkipBack, CaretDown, X } from '@phosphor-icon
 import { useOS } from '../../context/OSContext';
 import { useMusic } from '../../context/MusicContext';
 import { AppID } from '../../types';
+import { readSafeAreaInsets } from '../../utils/iosStandalone';
+import { clampBubblePos, clampExpandedBottom, resolveInsets } from '../../utils/floatingBallBounds';
 
-const BUBBLE_SIZE = 40;
-const EDGE_PAD = 8;
 const STORAGE_KEY = 'globalMiniPlayer.bubblePos.v1';
 const HIDDEN_KEY = 'globalMiniPlayer.hidden.v1';
 const EXPANDED_BOTTOM_KEY = 'globalMiniPlayer.expandedBottom.v1';
