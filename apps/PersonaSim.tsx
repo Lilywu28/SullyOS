@@ -16,7 +16,7 @@ import {
 // ============================================================
 //  TYPES (runtime script model)
 // ============================================================
-type BeatKind = 'lock' | 'thought' | 'notification' | 'app' | 'flashback' | 'end';
+type BeatKind = 'lock' | 'thought' | 'notification' | 'app' | 'flashback' | 'pause' | 'focus' | 'end';
 
 interface Beat {
     time?: string;
@@ -24,10 +24,13 @@ interface Beat {
     monologue?: string;
     pace?: 1 | 2 | 3;
     vibe?: 'calm' | 'chaotic' | 'happy' | 'anxious' | 'numb' | 'tender';
+    duration?: number; // pause / focus 停留秒数
+    focus?: { text?: string }; // 凝视的目标（如盯着最后一句话）
     notif?: { app: string; title: string; body: string; tone?: 'push' | 'sms' | 'system' | 'flashback' };
     app?: {
         name: string;
-        view: 'chat' | 'search' | 'photo' | 'music' | 'notes' | 'browser' | 'weather' | 'compose' | 'generic';
+        view: 'chat' | 'search' | 'photo' | 'music' | 'notes' | 'browser' | 'weather' | 'compose' | 'recent_apps' | 'generic';
+        recents?: { name: string; residue: string }[]; // 后台多任务残留
         chat?: { name: string; lines: { me: boolean; text: string }[] };
         search?: { engine?: string; queries: { q: string; deleted?: boolean }[] };
         photo?: { caption?: string; date?: string; tint?: string };
@@ -172,7 +175,7 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
         return -1;
     })();
     const screenBeat = screenIdx >= 0 ? beats[screenIdx] : undefined;
-    const isOverlay = beat?.kind === 'notification' || beat?.kind === 'thought';
+    const isOverlay = beat?.kind === 'notification' || beat?.kind === 'thought' || beat?.kind === 'pause' || beat?.kind === 'focus';
 
     // ----- kick off background generation (runs in CheckPhone) -----
     const requestStart = (m: 'daily' | 'event', t: string) => {
@@ -265,7 +268,9 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
     // ----- autoplay -----
     useEffect(() => {
         if (phase !== 'play' || !autoplay || !beat) return;
-        const base = beat.kind === 'flashback' ? 6500 : beat.kind === 'thought' ? 3600 : 3000;
+        const base = (beat.kind === 'pause' || beat.kind === 'focus')
+            ? Math.max(2200, (beat.duration || 5) * 1000)
+            : beat.kind === 'flashback' ? 6500 : beat.kind === 'thought' ? 3600 : 3000;
         const delay = base + (beat.pace === 3 ? 3500 : beat.pace === 2 ? 1600 : 0);
         const t = setTimeout(advance, delay);
         return () => clearTimeout(t);
@@ -694,6 +699,35 @@ const ScreenContent: React.FC<{ beat: Beat; char: CharacterProfile; showMono: bo
 //  OVERLAY — notification (drops) / thought (fades over the live screen)
 // ============================================================
 const Overlay: React.FC<{ beat: Beat }> = ({ beat }) => {
+    // 沉默拍：保留当前屏幕，什么都不发生，只剩一口呼吸的节奏（最窒息的东西）
+    if (beat.kind === 'pause') {
+        return (
+            <div className="absolute inset-0 flex items-end justify-center pb-10 pointer-events-none">
+                {beat.vibe === 'anxious' && <div className="absolute inset-0 bg-black/15" />}
+                <div className="flex gap-1.5 opacity-40 relative">
+                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-dot-pulse" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-dot-pulse" style={{ animationDelay: '0.25s' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-dot-pulse" style={{ animationDelay: '0.5s' }} />
+                </div>
+                {beat.monologue && <MonoLine text={beat.monologue} vibe={beat.vibe} />}
+            </div>
+        );
+    }
+    // 凝视拍：盯着屏幕上某个东西（如最后一句话），其余压暗
+    if (beat.kind === 'focus') {
+        return (
+            <div className="absolute inset-0 bg-black/55 flex items-center justify-center px-10">
+                <div className="text-center">
+                    {beat.focus?.text && (
+                        <div className="inline-block px-4 py-3 rounded-2xl bg-white/[0.08] border border-white/[0.14] animate-pulse">
+                            <span className="text-[15px] text-white/90 leading-relaxed">{beat.focus.text}</span>
+                        </div>
+                    )}
+                    {beat.monologue && <p className="mt-4 text-[13px] text-white/60" style={{ fontFamily: "'Shippori Mincho','Noto Sans SC',serif" }}>{beat.monologue}</p>}
+                </div>
+            </div>
+        );
+    }
     if (beat.kind === 'thought') {
         const scrim = beat.vibe === 'happy' ? 'bg-black/55' : beat.vibe === 'chaotic' ? 'bg-black/75' : 'bg-black/70';
         return (
@@ -855,6 +889,21 @@ const AppView: React.FC<{ app: NonNullable<Beat['app']>; char: CharacterProfile 
         );
     }
 
+    if (app.view === 'recent_apps' && app.recents) {
+        return (
+            <div className="h-full overflow-y-auto no-scrollbar p-4 space-y-2.5">
+                <div className="text-[10px] text-white/30 px-1 mb-1">最近任务 · 后台还开着</div>
+                {app.recents.map((r, i) => (
+                    <div key={i} className="rounded-2xl bg-white/[0.05] border border-white/[0.08] p-3.5 animate-fade-in"
+                        style={{ animationDelay: `${i * 90}ms`, animationFillMode: 'backwards' }}>
+                        <div className="text-[12.5px] font-semibold text-white/85">{r.name}</div>
+                        <div className="text-[11px] text-white/45 mt-0.5 truncate">{r.residue}</div>
+                    </div>
+                ))}
+            </div>
+        );
+    }
+
     if (app.view === 'weather' && app.weather) {
         const w = app.weather;
         return (
@@ -986,6 +1035,8 @@ function buildMemoryText(s: SimScript): string {
         const t = b.time ? b.time + ' ' : '';
         const mono = b.monologue ? `（${b.monologue}）` : '';
         if (b.kind === 'thought') { if (b.monologue) lines.push(`${t}心里：${b.monologue}`); continue; }
+        if (b.kind === 'pause') { lines.push(`${t}盯着屏幕，${b.duration ? b.duration + '秒' : '好一会儿'}没动${mono}`); continue; }
+        if (b.kind === 'focus') { lines.push(`${t}盯着${b.focus?.text ? `「${b.focus.text}」` : '屏幕'}${mono}`); continue; }
         if (b.kind === 'notification' && b.notif) { lines.push(`${t}${b.notif.app}通知：${b.notif.title}${b.notif.body ? ' ' + b.notif.body : ''}${mono}`); continue; }
         if (b.kind === 'flashback') { lines.push(`${t}相册突然翻出${b.flashback?.label || '一张旧照片'}${b.flashback?.caption ? '：' + b.flashback.caption : ''}${mono}`); continue; }
         if (b.kind === 'lock') { lines.push(`${t}${b.notif ? `锁屏，${b.notif.app}：${b.notif.title}` : '看了眼锁屏'}${mono}`); continue; }
@@ -999,6 +1050,7 @@ function buildMemoryText(s: SimScript): string {
             else if (a.view === 'notes' && a.notes) act += `，备忘录：${(a.notes.items || []).join('；')}`;
             else if (a.view === 'browser' && a.browser) act += `，标签页：${(a.browser.tabs || []).join('；')}`;
             else if (a.view === 'weather' && a.weather) act += `，看天气（${a.weather.temp}° ${a.weather.desc}）`;
+            else if (a.view === 'recent_apps' && a.recents) act += `，后台还开着：${a.recents.map(r => `${r.name}(${r.residue})`).join('；')}`;
             else if (a.text) act += `：${a.text}`;
             lines.push(`${t}${act}${mono}`);
         }
@@ -1097,13 +1149,21 @@ ${buildVariation()}
 
 【下猛料 · 密度 / 强度 / 具体度（这一段优先级最高，别给我收着）】
 - **要长、要满**：这是一场完整演出，不是预告片。beats 给足 **40~64 个**，疏密有致但总量宁多勿少。
-- **每一步都有戏**：绝大多数 beat 都带 monologue；独白可以接连成串——一个动作配 2~3 个跳跃、互相打架的念头，让脑子真的"在转"。
+- **每一步都有戏，但独白只配"表层碎念"**：beat 可常带 monologue 让脑子"在转"，但这些独白只能是表层的、逃避的、自欺的碎念（「无聊」「睡了吧」「跟我没关系」）；真正重要的情绪**不许**写进独白，留给行为去泄露（见下方进阶心法 A）。
 - **往死里具体**：用真实的名字、店名、歌名、金额、时间、对话原话、搜索词。**拒绝**「某人 / 某件事 / 一条消息 / 一首歌」这种含糊占位，每个细节都要像真有其事，能拼出一个活人。
 - **数字行为往狠里堆**：compose 的「打了又删」至少 2~3 次且每次草稿不同、search 的「搜了又删」至少一串 3~4 条层层递进（越搜越露底）、再穿插消息撤回 / 反复开同一页 / 已读不回 / 对方"正在输入…"又停了。
 - **高潮要够长够窒息**：把关键节点拉成 **8~12 个连续 beat**（开→关→重开→停顿→锁屏→再开→输入→删→输入→删→…→最终发送或最终没发），全程 pace=3，把"手指悬在发送键上"的劲儿磨出来。
 - **环境碎片撒厚**：购物车里躺着什么、半年前的待办写了什么、浏览器开着哪些标签、相册某张图是哪天——具体到刺人。
 - **敢于不体面**：真实的人会走神、会反复确认、会自欺、会因一件小事突然破防。别替 TA 美化、克制成一张白纸——该狼狈就狼狈，该上头就上头。
 - **结尾要"落地"，不要"断电"**：高潮之后**必须**有 3~6 个 beat 的收束——情绪慢慢沉下来、做一个最终的小动作（放下手机 / 关灯 / 最后看一眼那条消息 / 轻轻锁屏），pace 回落到 1~2；倒数第二拍用一句 thought 或一个 lock 给整场一个情绪落点，让观众真切感到"这一段，结束了"。**绝不能停在动作中途或高潮顶点就 end**。end 永远是收束之后的最后一拍，不是急刹车。
+
+【Screenlife 进阶心法 · 比"猛"更重要的是"真"】
+A. **重要情绪走行为，不走独白（最高准则）**：真正重要的情绪——想念、后悔、嫉妒、不甘、在意——禁止直接写进 thought（不许出现「我好想 ta」「我其实很在乎」这类自白）。把它逼进行为：打开聊天→退出→再点进去→翻到那张合照→锁屏。让**用户先看懂，角色后承认，甚至永远不承认**。
+B. **人格惯性 > 戏剧性**：所有行为必须贴合这个角色的长期习惯，别为了戏剧性把所有人都写成"深夜 emo、删删改改"。按人设走——外向的直接发；回避型留一堆长期草稿；工作狂情绪崩了也先回工作消息；社牛先发再后悔；社恐后悔到最后没发；钝感的人可能真的什么都没察觉。先问"这个 TA 会怎么做"再写。
+C. **沉默拍要敢用**：在紧张的 compose / search 反复之后，插一个 pause（6~8 秒、什么都不发生），比任何独白都狠。
+D. **误触会犯蠢**：允许低概率误触——点错聊天框、开错相册、发错表情、搜错词，且误触要**暴露潜意识**：本想搜「天气」，手却打了那个名字，秒删。
+E. **后台残留**：用 recent_apps 露一排痕迹（购物车里的围巾、地图搜过的医院、单曲循环的歌单），扫一眼立刻划掉、绝不解释——痕迹比台词诚实。
+F. **总方向：减少 thought、加大行为密度**。人会撒谎，搜索记录、草稿箱、最近任务、凌晨反复打开的聊天框不会。
 
 【输出格式】严格输出**一个 JSON 对象**（不要任何额外文字、不要 markdown 代码块），结构如下：
 {
@@ -1125,6 +1185,9 @@ ${buildVariation()}
 kind 取值与字段：
 - {"kind":"lock","time":"07:12","notif":{"app":"闹钟","title":"...","body":"..."},"monologue":"不想起床。"}  // 锁屏/亮屏
 - {"kind":"thought","monologue":"算了。","vibe":"numb"}  // 纯内心独白；情绪强烈时务必给 vibe（如崩溃→"chaotic"、雀跃→"happy"）
+- {"kind":"pause","duration":6,"vibe":"anxious"}  // **沉默拍**：没动作、没独白、没消息，就盯着屏幕。最窒息的东西。尤其放在「输入→删除→输入→删除」之后
+- {"kind":"focus","focus":{"text":"最后一句：在吗"},"duration":4,"monologue":"……"}  // **凝视拍**：盯着屏幕上某个具体的东西（一句话/一张图/一个红点），其余压暗
+- {"kind":"app","app":{"name":"最近任务","view":"recent_apps","recents":[{"name":"淘宝","residue":"女士围巾"},{"name":"地图","residue":"市立医院"},{"name":"网易云","residue":"单曲循环·某首歌"}]}}  // **后台残留**：切到多任务，扫过一排 App 的痕迹，立刻划掉、不解释——人格一下活了
 - {"kind":"notification","notif":{"app":"微信","title":"...","body":"...","tone":"push|sms|system|flashback"},"monologue":"..."}  // 横幅通知
 - {"kind":"app","app":{"name":"微信","view":"chat","chat":{"name":"妈","lines":[{"me":false,"text":"吃饭了吗"},{"me":true,"text":"吃了"}]}}}
 - {"kind":"app","app":{"name":"微信","view":"compose","compose":{"to":"她","drafts":["在吗","你最近还好吗"],"sent":null}}}  // 打字后删除；sent=null表示最终没发，sent填字符串表示最终发送
@@ -1137,7 +1200,7 @@ kind 取值与字段：
 - {"kind":"flashback","time":"15:00","flashback":{"label":"三个月前的今天","caption":"...","date":"...","tint":"#4a3a5a"},"monologue":""}  // 记忆闪回(可选)，label=自洽的时间口径，monologue留空=沉默
 - {"kind":"end","time":"23:40"}  // 最后一个 beat 必须是 end
 
-请严格贴合上面的【本场变奏】，并把【下猛料】那段吃透：beats 给足 40~64 个、独白密集、细节具体、数字行为反复、高潮拉长、结尾收束落地。**务必保证 JSON 完整闭合、结尾收好**——若篇幅吃紧，宁可砍掉几个中段 beat，也要留足收尾、把括号全部闭合，绝不允许写到一半被截断。直接输出 JSON 对象。`;
+请严格贴合上面的【本场变奏】，把【下猛料】和【进阶心法】一起吃透：beats 40~64、行为密度高于独白、重要情绪走行为不走自白、敢用沉默拍/凝视拍/后台残留、贴合人格惯性、高潮拉长、结尾收束落地。**务必保证 JSON 完整闭合、结尾收好**——若篇幅吃紧，宁可砍掉几个中段 beat，也要留足收尾、把括号全部闭合，绝不允许写到一半被截断。直接输出 JSON 对象。`;
 }
 
 function parseScript(raw: string): SimScript | null {
