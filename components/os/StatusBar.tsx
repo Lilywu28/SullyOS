@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { useOS } from '../../context/OSContext';
 import Modal from './Modal';
-import { isIOSStandaloneWebApp } from '../../utils/iosStandalone';
+import { isStatusBarHidden } from '../../utils/iosStandalone';
 
 // TypeScript definition for Web Battery API
 interface BatteryManager extends EventTarget {
@@ -61,9 +61,9 @@ const StatusBar: React.FC = () => {
 
   const hasError = systemLogs.length > 0;
 
-  // iOS 全屏 PWA：系统状态栏（真实时间/电量）删不掉且无法隐藏，这里隐掉 SullyOS 自己这条时钟/电量条避免双显。
-  // 安卓/桌面浏览器（无系统状态栏）仍渲染，作为虚拟手机自己的状态栏。virtualTime 实为真实时间，隐藏不丢信息。
-  const hideOsStatusBar = isIOSStandaloneWebApp();
+  // 时钟/电量条是否隐藏：外观「隐藏顶部时间栏」开关 + 平台默认（iOS 全屏 PWA 系统已有状态栏，默认隐藏避免双显）。
+  // 仅隐藏下面这条时钟/电量条；错误指示器 + 系统调试终端与本开关无关，始终独立渲染。virtualTime 实为真实时间，隐藏不丢信息。
+  const hideOsStatusBar = isStatusBarHidden(theme.hideStatusBar);
 
   return (
     <>
