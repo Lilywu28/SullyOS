@@ -839,7 +839,8 @@ const Chat: React.FC = () => {
         // 和笔记 id/token，直接解析就能建卡，让「没部署小红书 MCP」的用户也能让角色看到分享了哪篇笔记。
         // 配了 MCP 的话再抓详情补正文/封面/作者（锦上添花，抓失败也不影响基础卡）。
         if (type === 'text') {
-            let cardCreated = false;
+            let xhsCardCreated = false;
+            let webpageCardCreated = false;
             // 纯分享判定：去掉链接 + 小红书样板（【标题】/emoji/暗号）后，还剩用户自己写的话吗？
             const linkResidual = (txt: string): string => txt
                 .replace(/https?:\/\/\S+/g, ' ')
@@ -913,7 +914,7 @@ const Chat: React.FC = () => {
                             char.name, userProfile.name,
                         ));
                     }
-                    cardCreated = true;
+                    xhsCardCreated = true;
                 }
             }
 
@@ -939,15 +940,18 @@ const Chat: React.FC = () => {
                             char.name, userProfile.name,
                         ));
                     }
-                    cardCreated = true;
+                    webpageCardCreated = true;
                 } catch (e: any) {
                     console.warn('Webpage fetch failed:', e);
                     addToast(`网页抓取失败：${e?.message || '可能被站点拦截，建议在设置里配置 instant worker 作代理'}`, 'error');
                 }
             }
 
-            // 纯分享（去掉链接/样板后没有用户自己写的话）→ 删掉那条原始链接文本，只留卡片，干净好看。
-            if (cardCreated && savedUserMsgId && !linkResidual(text)) {
+            // 删掉原始链接文本、只留卡片：
+            //  - 小红书分享文案整体是样板（摘要/序号/口令提示）→ 建卡成功就删；
+            //  - 网页分享则保留「用户自己写了话」的情况（linkResidual 非空时不删）。
+            const shouldDeleteOriginal = xhsCardCreated || (webpageCardCreated && !linkResidual(text));
+            if (shouldDeleteOriginal && savedUserMsgId) {
                 await DB.deleteMessage(savedUserMsgId);
             }
         }
