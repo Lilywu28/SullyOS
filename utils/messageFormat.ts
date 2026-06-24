@@ -155,7 +155,12 @@ export function normalizeMessageContent(
         const author = (note.author || '').trim();
         const authorPart = author ? `（作者：${author}）` : '';
         const head = `[小红书笔记] ${userName}分享了一篇小红书笔记${title ? `《${title}》` : ''}${authorPart}`;
-        if (desc) return `${head}\n笔记正文：\n${desc}`;
+        // 评论区：建卡时抓到的评论一并喂给角色（含归档/记忆宫殿场景），与浏览笔记时的可见性对齐。
+        const comments = Array.isArray(note.comments) ? note.comments : [];
+        const commentsPart = comments.length
+            ? `\n评论区：\n${comments.slice(0, 15).map((c: any) => `· ${c.author || '匿名'}：${c.content}`).join('\n')}`
+            : '';
+        if (desc) return `${head}\n笔记正文：\n${desc}${commentsPart}`;
         // 只有标题（没部署 MCP / 没抓到正文）：角色至少知道是哪篇笔记，但别假装读过正文。
         if (title) return `${head}\n（注：只拿到了笔记标题，正文/图片没抓到——要读完整内容需部署小红书功能。别假装读过正文。）`;
         return `${head}\n（注：这篇笔记的内容没能获取到。）`;

@@ -19,6 +19,23 @@ describe('normalizeMessageContent · xhs_card', () => {
     expect(out).toContain('今天画了花岗岩版');
   });
 
+  it('有评论时把评论区也喂给角色（user 分享的笔记也能看到评论）', () => {
+    const out = normalizeMessageContent(
+      mk('xhs_card', '睡不够', { xhsNote: {
+        title: '睡不够', desc: '今天画了花岗岩版', author: '某人',
+        comments: [
+          { author: '路人甲', content: '太好笑了', likes: 12 },
+          { author: '路人乙', content: '同款', likes: 3 },
+        ],
+      } }),
+      'Char', '我',
+    );
+    expect(out).toContain('评论区');
+    expect(out).toContain('路人甲');
+    expect(out).toContain('太好笑了');
+    expect(out).toContain('路人乙');
+  });
+
   it('只有文案标题(无 MCP/没抓到正文)时给标题并明示别瞎编', () => {
     const out = normalizeMessageContent(
       mk('xhs_card', '睡不够', { xhsNote: { title: '睡不够', desc: '', author: '' } }),

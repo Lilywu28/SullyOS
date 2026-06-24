@@ -876,14 +876,27 @@ const Chat: React.FC = () => {
                     if (mcpUrl && realtimeConfig?.xhsMcpConfig?.enabled) {
                         try {
                             const noteUrl = `https://www.xiaohongshu.com/explore/${noteId}${xsecToken ? `?xsec_token=${xsecToken}&xsec_source=pc_share` : ''}`;
-                            const result = await XhsMcpClient.getNoteDetail(mcpUrl, noteUrl, xsecToken);
+                            // loadAllComments：和角色自己浏览笔记 (XHS_DETAIL) 一致地把评论区也抓回来，
+                            // 否则 user 分享的笔记只有标题/正文，角色读不到评论（char 分享给 user 的却能看到）。
+                            const result = await XhsMcpClient.getNoteDetail(mcpUrl, noteUrl, xsecToken, { loadAllComments: true });
                             if (isDevDebugAvailable()) console.log('[卡片调试] 小红书抓取 result =', result);
                             if (result.success && result.data) {
                                 // bridge(Lite) 返回 { data: { note, comments } }；MCP 可能直接是 note —— 逐层解包。
-                                const noteObj = (result.data as any)?.data?.note || (result.data as any)?.note || result.data;
+                                const dataRoot = (result.data as any)?.data || result.data;
+                                const noteObj = dataRoot?.note || (result.data as any)?.note || result.data;
                                 const fetched = normalizeNote(noteObj);
                                 // 抓到的字段补全基础卡；id/标题/token 保底，标题优先文案标题（更完整可读）。
                                 note = { ...note, ...fetched, noteId: fetched.noteId || note.noteId, title: titleFromText || fetched.title || note.title, xsecToken: fetched.xsecToken || xsecToken };
+                                // normalizeNote 只保留笔记基础字段会丢掉评论 —— 单独解包评论挂回卡片，
+                                // 让角色读 context 时也能看到评论区（与 char 浏览/分享笔记对齐）。
+                                const rawComments = dataRoot?.comments?.list || dataRoot?.comments
+                                    || (noteObj as any)?.comments?.list || (noteObj as any)?.comments || [];
+                                const comments = (Array.isArray(rawComments) ? rawComments : []).map((c: any) => ({
+                                    author: c.userInfo?.nickname || c.nickname || c.userName || c.author || '匿名',
+                                    content: c.content || '',
+                                    likes: c.likeCount || c.like_count || c.likes || 0,
+                                })).filter((c: any) => c.content).slice(0, 15);
+                                if (comments.length) note.comments = comments;
                             }
                         } catch (e) {
                             console.warn('XHS link fetch via MCP failed (已用文案兜底):', e);
