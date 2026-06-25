@@ -36,9 +36,10 @@ export const FISH_VOICE_ACTING_GUIDE = `### 让它听起来像活人在说话（
 **1. 鱼声用方括号 cue 控制情绪和声音，直接写在台词里（用的是 S2.1-Pro，把 [方括号] 当自然语言理解）。**
 - **cue 可以放在句子任意位置**，不止句首——放在你想让那个情绪/动作发生的那个字前面，就在那一刻触发。例：\`真不敢相信 [gasp] 你居然真做了 [laugh]\`。整句基调的情绪放句首最顺，精确的小情绪/声响就贴着那个点放。
 - **鼓励用自然语言描述、可叠副词，不限固定词表**：\`[whispers sweetly]\`（甜甜地悄悄说）\`[laughing nervously]\`（紧张地笑）\`[warm and happy]\`\`[slightly sad]\`\`[very excited]\`\`[nervous and uncertain]\`。越贴当下心情越好，别永远只用 [happy]/[sad] 那几个干词。
-- 常用基础 cue：\`[whisper]\`\`[laugh]\`\`[emphasis]\`（加重）\`[angry]\`\`[excited]\`\`[sad]\`\`[surprised]\`\`[soft tone]\`\`[shouting]\`。
+- 常用基础 cue：\`[whisper]\`\`[laugh]\`\`[emphasis]\`（加重）\`[angry]\`\`[excited]\`\`[sad]\`\`[surprised]\`\`[shouting]\`。
+- **轻声/气声这类"音量"效果，单写 \`[soft tone]\`/\`[whisper]\` 往往很弱、几乎听不出。想要真的轻下来，用更具体的自然语言描述**（S2.1 对描述越细越敏感）：\`[whispering very softly]\`、\`[almost whispering, breathy]\`、\`[speaking softly and gently]\`、\`[hushed, intimate tone]\`。配合内容也压低（短句、省略号、别用感叹号）效果才出得来。
 - 真实声响：\`[laughing]\`\`[chuckling]\`\`[sighing]\`\`[sobbing]\`\`[gasping]\` —— 后面最好补一点拟声字，如 "[laughing] 哈哈哈"。
-- 停顿：\`[break]\`（短停）\`[long-break]\`（长停）。
+- 停顿：\`[break]\`（短停）\`[long-break]\`（长停）。换行/分段不用你手动加停顿，系统会自动在换行处插停顿。
 这些方括号 cue 只是演出指令，**不会被念出来**，也不会显示给用户。
 **⚠️ 格式硬性要求（写错会被原样念出来）：cue 一律用半角英文方括号 \`[like this]\`，括号里只写英文。** 绝对不要用：圆括号 \`(sighs)\`/\`(laughs)\`（那是别的引擎的写法，鱼声会把"sighs"念出来）、中文方括号 \`[轻声]\`/全角【】、或 \`<语音 emotion="…">\` 这种属性——鱼声只认上面的英文方括号 cue。
 
@@ -110,6 +111,9 @@ export const cleanTextForTtsFish = (raw: string): string => {
     // MiniMax 圆括号声音标签 / 西文舞台指示：仅放行鱼声 paralanguage 特效，其余删（否则被念出来）
     .replace(/\(([^)]{1,40})\)/g, (m, inner: string) =>
       FISH_PAREN_FX.has(inner.trim().toLowerCase()) ? m : '')
+    // 换行写死成停顿（不靠模型/指导）：段落空行 → 长停，普通换行 → 短停。
+    .replace(/\n{2,}/g, ' [long-break] ')
+    .replace(/\n+/g, ' [break] ')
     .replace(/\s+/g, ' ')
     .trim();
   return text;
@@ -250,8 +254,11 @@ export async function synthesizeSpeechFishDetailed(
   let spoken = cleanTextForTtsFish(text);
   // 兜底：上层传了整条 emotion 属性、且正文没有任何方括号 cue 时，前置一个 cue。
   // 正常情况下 LLM 已按鱼声指导在正文写了 inline cue，这里不会触发。
-  const hasInlineCue = FISH_BRACKET_CUE_RE.test(spoken);
-  FISH_BRACKET_CUE_RE.lastIndex = 0; // 带 /g 的正则 test 有状态，复位
+  // 兜底：上层传了整条 emotion 属性、且正文没有任何「情绪/语气」cue 时，前置一个 cue。
+  // 注意只看情绪类 cue，[break]/[long-break] 这类停顿不算（否则换行插的停顿会顶掉兜底）。
+  const emotionCues = (spoken.match(/\[([^\]]+)\]/g) || [])
+    .filter(c => !/^\[(break|long-break)\]$/i.test(c.trim()));
+  const hasInlineCue = emotionCues.length > 0;
   const fishEmotion = options?.emotion ? FISH_EMOTION_MAP[options.emotion.toLowerCase()] : undefined;
   if (fishEmotion && !hasInlineCue) spoken = `[${fishEmotion}] ${spoken}`;
   if (!spoken) throw new Error('鱼声 TTS 文本为空');
