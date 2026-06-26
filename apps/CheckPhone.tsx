@@ -579,9 +579,10 @@ ${layoutHint[layout || 'generic']}`;
                     let savedMsgId: number | undefined;
                     if (pushToChat) {
                         // 包装成上下文可读的漂亮卡片（phone_card），不再是古早的 [系统:...] 纯文本
+                        // 进角色上下文的措辞：第二人称讲「你自己手机里有啥」，不暗示用户在偷看
                         const cardContent = type === 'chat'
-                            ? `[在 TA 手机的聊天软件里看到与「${recordTitle}」的对话] ${recordDetail.replace(/\n/g, ' ')}`
-                            : `[在 TA 手机的${logPrefix}里看到] ${recordTitle}${item.value ? ` · ${item.value}` : ''} — ${recordDetail}`;
+                            ? `[你手机的聊天软件] 你和「${recordTitle}」的对话：${recordDetail.replace(/\n/g, ' ')}`
+                            : `[你手机的${logPrefix}] ${recordTitle}${item.value ? ` · ${item.value}` : ''} — ${recordDetail}`;
                         await DB.saveMessage({
                             charId: targetChar.id,
                             role: 'assistant',
@@ -748,14 +749,15 @@ ${layoutHint[layout || 'generic']}`;
 
             if (!newSessions.length) { addToast('没抓到内容，再试一次', 'error'); return; }
 
-            // 漏风：跟随查手机全局 sendToChat —— 开则往私聊塞一张卡片，让角色隐约知道你翻了 TA 的 AI
+            // 漏风：跟随查手机全局 sendToChat —— 开则往私聊塞一张卡片。
+            // 措辞同样是「你自己手机上的 AI 记录」，第二人称，不暗示用户在偷看。
             if (pushToChat) {
                 for (const sess of newSessions) {
                     const preview = parseTranscript(sess.transcript).slice(0, 2)
-                        .map(t => `${t.isMe ? charName : sess.serviceName}: ${t.text}`).join(' / ');
+                        .map(t => `${t.isMe ? '我' : sess.serviceName}: ${t.text}`).join(' / ');
                     await DB.saveMessage({
                         charId: targetChar.id, role: 'assistant', type: 'phone_card',
-                        content: `[在 TA 手机的智能体 App(${svcName})里，看到 TA 和 AI 的对话「${sess.title}」] ${preview}`,
+                        content: `[你手机的智能体 App·${svcName}] 你和 AI 的对话「${sess.title}」：${preview}`,
                         metadata: { phoneCard: { app: '智能体', kind: `ai_${service}`, title: sess.title, detail: preview } },
                     } as any);
                 }
@@ -1081,7 +1083,7 @@ ${layoutHint[layout || 'generic']}`;
         if (ownerSendToChat) {
             msgId = await DB.saveMessage({
                 charId: owner.id, role: 'assistant', type: 'phone_card',
-                content: `[在 TA 手机的聊天软件里看到与「${partnerName}」的对话] ${detail.replace(/\n/g, ' ')}`,
+                content: `[你手机的聊天软件] 你和「${partnerName}」的对话：${detail.replace(/\n/g, ' ')}`,
                 metadata: { phoneCard: { app: '聊天软件', kind: 'chat', title: partnerName, detail } },
             } as any);
         }
