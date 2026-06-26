@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normName, matchRealChar, clampAffinity, upsertContact, flipTranscript, parseTranscript, serializeTurns } from './relationshipChat';
+import { normName, matchRealChar, clampAffinity, upsertContact, flipTranscript, parseTranscript, serializeTurns, appendLearned } from './relationshipChat';
 import type { PhoneContact } from '../types';
 
 describe('relationshipChat · 纯函数', () => {
@@ -74,6 +74,21 @@ describe('relationshipChat · 纯函数', () => {
 
     it('flipTranscript 多行消息也整体翻转、补全前缀', () => {
         expect(flipTranscript('我: a\nb\n对方: c')).toBe('对方: a\n对方: b\n我: c');
+    });
+
+    it('appendLearned 累积/去重/限长', () => {
+        expect(appendLearned('', '其实在读研')).toBe('其实在读研');
+        expect(appendLearned('其实在读研', '欠房东两个月房租')).toBe('其实在读研\n欠房东两个月房租');
+        // 完全相同的不重复加
+        expect(appendLearned('其实在读研', '其实在读研')).toBe('其实在读研');
+        // 空了解不改动已有
+        expect(appendLearned('其实在读研', '  ')).toBe('其实在读研');
+        // 超过上限只留最近 N 行
+        const many = Array.from({ length: 10 }, (_, i) => `事${i}`).join('\n');
+        const r = appendLearned(many, '新事', 8).split('\n');
+        expect(r).toHaveLength(8);
+        expect(r[r.length - 1]).toBe('新事');
+        expect(r[0]).toBe('事3'); // 最早的事0~事2 被挤掉
     });
 
     it('upsertContact 不用 undefined 抹掉已有字段，且保留已有非空备注', () => {

@@ -8,7 +8,7 @@ import { safeResponseJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import {
     runRealConversation, runNpcConversation, upsertContact, matchRealChar,
-    clampAffinity, normName, flipTranscript, parseTranscript,
+    clampAffinity, normName, flipTranscript, parseTranscript, appendLearned,
 } from '../utils/relationshipChat';
 import PersonaSim, { LifeLog, generatePersonaScript } from './PersonaSim';
 import { usePersonaSim, personaSimStore } from '../utils/personaSimStore';
@@ -702,14 +702,14 @@ ${layoutHint[layout || 'generic']}`;
     // 给某个机主侧落一段真实对话：更新好感/状态 + 写 chat 记录 + （机主开了同步才）镜像进私聊 + 自动加删友播报
     const commitConversationSide = async (
         owner: CharacterProfile, partnerName: string, partnerCharId: string,
-        detail: string, delta: number, partnerNote?: string,
+        detail: string, delta: number, partnerNote?: string, learnedNew?: string,
     ) => {
         // upsert 指向对方的真实联系人
         let contacts = upsertContact(owner.phoneState?.contacts || [], {
             name: partnerName, kind: 'real', linkedCharId: partnerCharId, lastInteraction: Date.now(), note: partnerNote,
         });
         const cid = contacts.find(c => c.linkedCharId === partnerCharId || normName(c.name) === normName(partnerName))?.id;
-        // 好感增减 + 自动加删友
+        // 好感增减 + 自动加删友 + 累积「了解」
         let broadcast = '';
         contacts = contacts.map(c => {
             if (c.id !== cid) return c;
@@ -717,7 +717,8 @@ ${layoutHint[layout || 'generic']}`;
             let status = c.status;
             if (newAff <= -60 && c.status === 'friend') { status = 'deleted'; broadcast = `（我把 ${c.name} 删了，懒得再联系。）`; }
             else if (newAff >= 60 && c.status !== 'friend' && c.status !== 'blocked') { status = 'friend'; broadcast = `（我又把 ${c.name} 加回来了。）`; }
-            return { ...c, affinity: newAff, status, lastInteraction: Date.now() };
+            const learned = learnedNew ? appendLearned(c.learned, learnedNew) : c.learned;
+            return { ...c, affinity: newAff, status, learned, lastInteraction: Date.now() };
         });
         // chat 记录（按联系人 upsert）
         const recs = owner.phoneState?.records || [];
@@ -755,10 +756,12 @@ ${layoutHint[layout || 'generic']}`;
                 a: targetChar, b, user: userProfile, api: apiConfig as any,
                 affinityA: contact.affinity, affinityB: bToA?.affinity ?? 0,
                 existingDetail: existing?.detail, aNote: contact.note, bNote: bToA?.note,
+                bLearned: contact.learned, aLearned: bToA?.learned,
             });
             if (!result.aDetail.trim()) { addToast('对方没有回应…', 'error'); return; }
-            await commitConversationSide(targetChar, contact.name, b.id, result.aDetail, result.aDelta, contact.note);
-            await commitConversationSide(b, targetChar.name, targetChar.id, result.bDetail, result.bDelta, bToA?.note);
+            // A 学到的写进 A 对 B 的了解；B 学到的写进 B 对 A 的了解
+            await commitConversationSide(targetChar, contact.name, b.id, result.aDetail, result.aDelta, contact.note, result.aLearnedNew);
+            await commitConversationSide(b, targetChar.name, targetChar.id, result.bDetail, result.bDelta, bToA?.note, result.bLearnedNew);
             addToast(`${targetChar.name} 和 ${b.name} 聊了一会儿`, 'success');
         } catch (e) {
             console.error(e);
@@ -774,9 +777,10 @@ ${layoutHint[layout || 'generic']}`;
         setIsLoading(true);
         try {
             const existing = (targetChar.phoneState?.records || []).find(r => r.type === 'chat' && (r.contactId === contact.id || normName(r.title) === normName(contact.name)));
-            const { detail } = await runNpcConversation({
+            const { detail, learnedNew } = await runNpcConversation({
                 host: targetChar, user: userProfile, api: apiConfig as any,
-                npcName: contact.name, identity: contact.identity, note: contact.note, rounds: 4, existingDetail: existing?.detail,
+                npcName: contact.name, identity: contact.identity, note: contact.note,
+                learned: contact.learned, rounds: 4, existingDetail: existing?.detail,
             });
             if (!detail.trim()) { addToast('对方没有回应', 'error'); return; }
             const now = Date.now();
@@ -785,7 +789,11 @@ ${layoutHint[layout || 'generic']}`;
                 const next = existing
                     ? recs.map(r => r.id === existing.id ? { ...r, detail, timestamp: now } : r)
                     : [...recs, { id: `rec-${now}-${Math.random()}`, type: 'chat', title: contact.name, detail, timestamp: now, contactId: contact.id }];
-                return { phoneState: { ...cur.phoneState, records: next } };
+                // 把这次脑补出来的新设定累积进该 NPC 的「了解」，保持下次一致
+                const contactsNext = learnedNew
+                    ? (cur.phoneState?.contacts || []).map(c => c.id === contact.id ? { ...c, learned: appendLearned(c.learned, learnedNew) } : c)
+                    : cur.phoneState?.contacts;
+                return { phoneState: { ...cur.phoneState, records: next, ...(contactsNext ? { contacts: contactsNext } : {}) } };
             });
             addToast('生成了一段对话', 'success');
         } catch (e) {
@@ -1308,6 +1316,19 @@ ${layoutHint[layout || 'generic']}`;
                             <p className="text-[12.5px] text-white/70 leading-relaxed whitespace-pre-wrap">{c.note || '（无备注）'}</p>
                         )}
                     </div>
+
+                    {/* 了解：TA 在相处中逐渐认识到的——来自对方说法，未必属实，与备注(事实)分开。聊出新认识会自动累积 */}
+                    {c.learned && c.learned.trim() && (
+                        <div className="rounded-2xl p-4 bg-white/[0.02] border border-white/[0.06] border-dashed">
+                            <div className="flex items-center justify-between mb-1.5">
+                                <span className="text-[10px] tracking-[0.2em] uppercase text-white/40">了解 · {targetChar.name} 眼中的 TA</span>
+                                <button onClick={() => mutateContacts(cs => cs.map(x => x.id === c.id ? { ...x, learned: '' } : x))}
+                                    className="text-white/40 active:scale-90 transition" aria-label="清空了解"><Trash size={13} weight="bold" /></button>
+                            </div>
+                            <p className="text-[12px] text-white/55 leading-relaxed whitespace-pre-wrap">{c.learned}</p>
+                            <p className="text-[9.5px] text-white/30 mt-1.5">※ 来自相处的印象，是 TA 自己说的，未必属实</p>
+                        </div>
+                    )}
 
                     {/* 对话预览：超过 50 条默认折叠，点「展开更早的」才显示之前的记录 */}
                     {parsed.length > 0 && (() => {
