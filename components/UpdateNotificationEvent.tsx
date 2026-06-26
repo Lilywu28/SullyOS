@@ -23,7 +23,7 @@ export const UPDATE_NOTIFICATION_KEY_2026_06_05 = 'sullyos_update_2026_06_05_see
 export const UPDATE_NOTIFICATION_KEY_2026_06_14 = 'sullyos_update_2026_06_14_seen';
 // 历史 key —— 6.21 「查手机」翻新 + 人格模拟 · 手游风外观 · 小红书分享
 export const UPDATE_NOTIFICATION_KEY_2026_06_21 = 'sullyos_update_2026_06_21_seen';
-// 本次更新 key —— 6.26 梦境盲盒 · 联系人模式 · char 的小手机 · 见面状态栏 · 时间感知归位 · 鱼生 TTS
+// 本次更新 key —— 6.26 梦境盲盒 · 联系人模式 · char 的小手机 · 见面状态栏 · 时间感知归位 · 鱼声 TTS
 export const UPDATE_NOTIFICATION_KEY_2026_06_26 = 'sullyos_update_2026_06_26_seen';
 
 export const FAQ_TARGET_SECTION_KEY = 'sullyos_faq_target_section';
@@ -89,7 +89,7 @@ export const UpdateNotificationPopup: React.FC<UpdateNotificationPopupProps> = (
                             <strong className="text-indigo-600">「查手机」</strong>新增<strong>联系人模式</strong>（看人际关系、删好友）与<strong className="text-violet-600">智能体</strong>——char 也有自己的小手机，你还能扮演 ta 酒馆里的 AI。
                         </p>
                         <p className="text-[12px] text-slate-500 leading-relaxed mt-2">
-                            还有：<strong>见面</strong>新增可自定义状态栏、设置前移；<strong>日程</strong>看得更细；<strong className="text-violet-600">时间感知</strong>归位到神经链接；<strong>TTS</strong> 新增<strong>鱼生 API</strong>。
+                            还有：<strong>见面</strong>新增可自定义状态栏、设置前移；<strong>日程</strong>看得更细；<strong className="text-violet-600">时间感知</strong>归位到神经链接；<strong>TTS</strong> 新增<strong>鱼声 API</strong>。
                         </p>
                     </div>
                     <div className="bg-violet-50 border border-violet-200 rounded-2xl p-3">
