@@ -84,8 +84,8 @@ const DREAM_BOX_FILE: Record<DreamArchetype, string> = {
 };
 const boxImg = (a: DreamArchetype): string => DREAM_BOX_BASE + encodeURIComponent(DREAM_BOX_FILE[a]);
 
-// 盲盒系列（定期活动；以后换弹改这里 / 扩成多套）
-const DREAM_BOX_SERIES = { id: 'dreamcats-01', title: '小小梦境 · 喵梦盲盒', sub: '第一弹 Vol.1' };
+// 盲盒系列（目前就这一款；保留结构便于以后扩成多套）
+const DREAM_BOX_SERIES = { id: 'dreamcats-01', title: '小小梦境 · 喵梦盲盒', sub: 'Dream Cats' };
 
 // 收藏册：账号级，localStorage。记录每个原型的首次解锁时间与累计抽到次数（含重复）。
 const DREAM_COLLECTION_KEY = 'os_dream_collection';
@@ -788,7 +788,7 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
                         })}
                     </div>
                     <p className="text-[10px] text-white/25 mt-6 text-center leading-relaxed px-4">
-                        🐾 {DREAM_BOX_SERIES.title} · 限时系列<br />未解锁的梦境小猫，藏在还没做过的梦里。
+                        🐾 {DREAM_BOX_SERIES.title}<br />未解锁的梦境小猫，藏在还没做过的那种梦里。
                     </p>
                 </div>
             </Shell>
