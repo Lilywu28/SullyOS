@@ -817,6 +817,7 @@ interface MessageItemProps {
     charName: string;
     userAvatar: string;
     onLongPress: (m: Message) => void;
+    onReply: (m: Message) => void;
     selectionMode: boolean;
     isSelected: boolean;
     onToggleSelect: (id: number) => void;
@@ -868,6 +869,7 @@ const MessageItem = React.memo(({
     charName,
     userAvatar,
     onLongPress,
+    onReply,
     selectionMode,
     isSelected,
     onToggleSelect,
@@ -904,54 +906,98 @@ const MessageItem = React.memo(({
     const avatarSizePx = avatarSize === 'small' ? 28 : avatarSize === 'large' ? 48 : 36;
     const shouldShowAvatar = avatarMode === 'every_message' || isLastInGroup;
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const startPos = useRef({ x: 0, y: 0 }); // Track touch start position
+    const startPos = useRef({ x: 0, y: 0 });
+    const activePointerId = useRef<number | null>(null);
+    const replyGestureActiveRef = useRef(false);
+    const replyGestureMovedRef = useRef(false);
+    const replyReadyRef = useRef(false);
 
     const styleConfig = isUser ? activeTheme.user : activeTheme.ai;
     const [showVoiceText, setShowVoiceText] = useState(false);
+    const [replyOffset, setReplyOffset] = useState(0);
+    const [isReplyGestureActive, setIsReplyGestureActive] = useState(false);
+    const [isReplyReady, setIsReplyReady] = useState(false);
 
-    const handleTouchStart = (e: React.TouchEvent | React.MouseEvent) => {
-        // Record initial position
-        if ('touches' in e) {
-            startPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-        } else {
-            startPos.current = { x: e.clientX, y: e.clientY };
-        }
-        
+    const clearLongPressTimer = () => {
+        if (!longPressTimer.current) return;
+        clearTimeout(longPressTimer.current);
+        longPressTimer.current = null;
+    };
+
+    const resetReplyGesture = () => {
+        replyGestureActiveRef.current = false;
+        replyGestureMovedRef.current = false;
+        replyReadyRef.current = false;
+        setIsReplyGestureActive(false);
+        setIsReplyReady(false);
+        setReplyOffset(0);
+    };
+
+    const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (selectionMode || e.button !== 0) return;
+        activePointerId.current = e.pointerId;
+        startPos.current = { x: e.clientX, y: e.clientY };
+        replyGestureMovedRef.current = false;
+        document.getSelection()?.removeAllRanges();
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+
+        clearLongPressTimer();
         longPressTimer.current = setTimeout(() => {
-            if (!selectionMode) {
+            longPressTimer.current = null;
+            if (isSystem) {
                 onLongPress(m);
+                return;
             }
+            document.getSelection()?.removeAllRanges();
+            replyGestureActiveRef.current = true;
+            setIsReplyGestureActive(true);
         }, 600);
     };
 
-    const handleTouchEnd = () => {
-        if (longPressTimer.current) {
-            clearTimeout(longPressTimer.current);
-            longPressTimer.current = null;
+    const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (activePointerId.current !== e.pointerId) return;
+        const diffX = e.clientX - startPos.current.x;
+        const diffY = e.clientY - startPos.current.y;
+
+        if (!replyGestureActiveRef.current) {
+            if (Math.abs(diffX) > 10 || Math.abs(diffY) > 10) clearLongPressTimer();
+            return;
         }
+
+        if (Math.abs(diffY) > 24 && Math.abs(diffY) > Math.abs(diffX)) {
+            resetReplyGesture();
+            return;
+        }
+
+        e.preventDefault();
+        document.getSelection()?.removeAllRanges();
+        replyGestureMovedRef.current = Math.abs(diffX) > 8;
+        const nextOffset = Math.max(-72, Math.min(0, diffX));
+        const nextReady = nextOffset <= -52;
+        replyReadyRef.current = nextReady;
+        setReplyOffset(nextOffset);
+        setIsReplyReady(nextReady);
     };
 
-    // New handler to cancel long press if user drags/scrolls
-    const handleMove = (e: React.TouchEvent | React.MouseEvent) => {
-        if (!longPressTimer.current) return;
+    const handlePointerEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (activePointerId.current !== e.pointerId) return;
+        clearLongPressTimer();
+        try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+        activePointerId.current = null;
 
-        let clientX, clientY;
-        if ('touches' in e) {
-            clientX = e.touches[0].clientX;
-            clientY = e.touches[0].clientY;
-        } else {
-            clientX = e.clientX;
-            clientY = e.clientY;
-        }
+        const wasReplyGesture = replyGestureActiveRef.current;
+        const shouldReply = wasReplyGesture && replyReadyRef.current;
+        const shouldOpenMenu = wasReplyGesture && !replyGestureMovedRef.current;
+        resetReplyGesture();
 
-        const diffX = Math.abs(clientX - startPos.current.x);
-        const diffY = Math.abs(clientY - startPos.current.y);
+        if (shouldReply) onReply(m);
+        else if (shouldOpenMenu) onLongPress(m);
+    };
 
-        // If moved more than 10px, assume scrolling and cancel long press
-        if (diffX > 10 || diffY > 10) {
-            clearTimeout(longPressTimer.current);
-            longPressTimer.current = null;
-        }
+    const handlePointerCancel = () => {
+        clearLongPressTimer();
+        activePointerId.current = null;
+        resetReplyGesture();
     };
 
     const handleClick = (e: React.MouseEvent) => {
@@ -963,18 +1009,15 @@ const MessageItem = React.memo(({
     };
 
     const interactionProps = {
-        onMouseDown: handleTouchStart,
-        onMouseUp: handleTouchEnd,
-        onMouseLeave: handleTouchEnd,
-        onMouseMove: handleMove,
-        onTouchStart: handleTouchStart,
-        onTouchEnd: handleTouchEnd,
-        onTouchMove: handleMove,
-        onTouchCancel: handleTouchEnd, // Handle system interruptions
+        onPointerDown: handlePointerDown,
+        onPointerUp: handlePointerEnd,
+        onPointerMove: handlePointerMove,
+        onPointerCancel: handlePointerCancel,
         onContextMenu: (e: React.MouseEvent) => {
             e.preventDefault();
-            if (!selectionMode) onLongPress(m);
+            if (!selectionMode && e.button === 2) onLongPress(m);
         },
+        onDragStart: (e: React.DragEvent) => e.preventDefault(),
         onClick: handleClick
     };
 
@@ -1286,7 +1329,32 @@ const MessageItem = React.memo(({
                     Added min-w-0 to prevent flexbox overflow issues.
                     Added explicit margins to clear absolute avatars.
                 */}
-                <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} max-w-[72%] min-w-0 ${!isUser ? 'ml-12' : 'mr-12'}`} {...interactionProps}>
+                <div className={`relative max-w-[72%] min-w-0 ${!isUser ? 'ml-12' : 'mr-12'}`}>
+                    <div
+                        aria-hidden="true"
+                        className={`absolute -right-10 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center pointer-events-none transition-all duration-150 ${isReplyReady ? 'bg-indigo-500 text-white shadow-md shadow-indigo-200' : 'bg-white/90 text-slate-400 shadow-sm'}`}
+                        style={{
+                            opacity: Math.min(1, Math.abs(replyOffset) / 36),
+                            transform: `translateY(-50%) scale(${isReplyReady ? 1 : 0.86})`,
+                        }}
+                    >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+                            <path d="M9 17 4 12l5-5" />
+                            <path d="M4 12h10a6 6 0 0 1 6 6v1" />
+                        </svg>
+                    </div>
+                    <div
+                        className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} min-w-0`}
+                        style={{
+                            transform: `translateX(${replyOffset}px)`,
+                            transition: isReplyGestureActive ? 'none' : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
+                            touchAction: 'pan-y',
+                            userSelect: 'none',
+                            WebkitUserSelect: 'none',
+                            WebkitTouchCallout: 'none',
+                        } as React.CSSProperties}
+                        {...interactionProps}
+                    >
                     {!isUser && m.metadata?.thinkingChain && (
                         <div className={`relative w-full ${selectionMode ? 'pl-7' : ''}`}>
                             {selectionMode && onToggleThinkingSelect && (
@@ -1315,6 +1383,7 @@ const MessageItem = React.memo(({
                     {isLastInGroup && showTimestamp !== 'never' && (
                         <div className={`text-[9px] text-slate-400/80 px-1 mt-1 font-medium ${showTimestamp === 'hover' ? 'opacity-0 group-hover:opacity-100 transition-opacity' : ''}`}>{formatTime(m.timestamp)}</div>
                     )}
+                    </div>
                 </div>
 
                 {/* User Avatar - Absolute Positioned */}

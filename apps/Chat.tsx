@@ -2010,12 +2010,16 @@ const Chat: React.FC = () => {
         addToast('消息已修改', 'success');
     };
 
+    const handleQuickReply = useCallback((message: Message) => {
+        setReplyTarget({
+            ...message,
+            metadata: { ...message.metadata, senderName: message.role === 'user' ? '我' : char.name }
+        });
+    }, [char.name]);
+
     const handleReplyMessage = () => {
         if (!selectedMessage) return;
-        setReplyTarget({
-            ...selectedMessage,
-            metadata: { ...selectedMessage.metadata, senderName: selectedMessage.role === 'user' ? '我' : char.name }
-        });
+        handleQuickReply(selectedMessage);
         setModalType('none');
     };
 
@@ -2840,6 +2844,7 @@ const Chat: React.FC = () => {
                             charName={char.name}
                             userAvatar={userProfile.avatar}
                             onLongPress={handleMessageLongPress}
+                            onReply={handleQuickReply}
                             selectionMode={selectionMode}
                             isSelected={selectedMsgIds.has(m.id)}
                             onToggleSelect={toggleMessageSelection}

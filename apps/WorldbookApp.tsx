@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef } from 'react';
 import { useOS } from '../context/OSContext';
 import { Worldbook, WorldbookDepthRole, WorldbookPosition, WorldbookSelectiveLogic } from '../types';
 import Modal from '../components/os/Modal';
-import { DiamondsFour, BookOpen, DownloadSimple, UploadSimple } from '@phosphor-icons/react';
+import { DiamondsFour, BookOpen, DownloadSimple, UploadSimple, WarningCircle } from '@phosphor-icons/react';
 import {
     parseStandardWorldbook,
     serializeStandardWorldbook,
@@ -29,6 +29,7 @@ const WorldbookApp: React.FC = () => {
     const [tempContent, setTempContent] = useState('');
     const [tempCategory, setTempCategory] = useState('');
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+    const [showImportConfirm, setShowImportConfirm] = useState(false);
     const importRef = useRef<HTMLInputElement>(null);
     const [tempEnabled, setTempEnabled] = useState(true);
     const [tempConstant, setTempConstant] = useState(true);
@@ -178,6 +179,11 @@ const WorldbookApp: React.FC = () => {
         } finally {
             if (importRef.current) importRef.current.value = '';
         }
+    };
+
+    const confirmImport = () => {
+        setShowImportConfirm(false);
+        importRef.current?.click();
     };
 
     const handleExportGroup = (event: React.MouseEvent, category: string, books: Worldbook[]) => {
@@ -484,7 +490,7 @@ const WorldbookApp: React.FC = () => {
                         <div className="flex items-center gap-2">
                             <input ref={importRef} type="file" className="hidden" onChange={handleImport} />
                             <button
-                                onClick={() => importRef.current?.click()}
+                                onClick={() => setShowImportConfirm(true)}
                                 className="w-9 h-9 bg-white/80 text-indigo-500 border border-white rounded-full shadow-sm flex items-center justify-center active:scale-90 transition-transform"
                                 title="导入标准世界书"
                             >
@@ -614,6 +620,38 @@ const WorldbookApp: React.FC = () => {
                     );
                 })}
             </div>
+
+            {/* Import Notice Modal */}
+            <Modal
+                isOpen={showImportConfirm}
+                title="导入世界书"
+                onClose={() => setShowImportConfirm(false)}
+                footer={
+                    <div className="flex gap-3 w-full">
+                        <button
+                            onClick={() => setShowImportConfirm(false)}
+                            className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl active:scale-95 transition-transform"
+                        >
+                            取消
+                        </button>
+                        <button
+                            onClick={confirmImport}
+                            className="flex-1 py-3 bg-indigo-500 text-white font-bold rounded-2xl shadow-lg shadow-indigo-200 active:scale-95 transition-transform hover:bg-indigo-600"
+                        >
+                            确定
+                        </button>
+                    </div>
+                }
+            >
+                <div className="py-3 text-sm text-slate-600 flex flex-col items-center gap-4">
+                    <div className="w-14 h-14 bg-amber-50 rounded-full flex items-center justify-center text-amber-500 ring-8 ring-amber-50/50">
+                        <WarningCircle size={28} weight="fill" />
+                    </div>
+                    <p className="text-center leading-6">
+                        请注意，如果导入的不是您的作品，请确定该世界书的作者允许该世界书用于免费小手机。
+                    </p>
+                </div>
+            </Modal>
 
             {/* Delete Confirmation Modal */}
             <Modal 
