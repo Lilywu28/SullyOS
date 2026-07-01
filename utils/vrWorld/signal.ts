@@ -97,7 +97,8 @@ export const Signal = {
     async start(p: { title: string; brief: string; lines: string[]; targetLines: number; pen: string }): Promise<SignalState> {
         return await call<SignalState>('/poem/start', {
             method: 'POST',
-            body: JSON.stringify({ device: getDeviceId(), pen: maskPen(p.pen), title: p.title, brief: p.brief, lines: p.lines, targetLines: p.targetLines }),
+            // firstLine 是给「还没更新到支持 lines[] 的旧 worker」的兼容字段
+            body: JSON.stringify({ device: getDeviceId(), pen: maskPen(p.pen), title: p.title, brief: p.brief, lines: p.lines, firstLine: p.lines[0], targetLines: p.targetLines }),
         });
     },
 
@@ -105,7 +106,8 @@ export const Signal = {
     async append(p: { poemId: string; lines: string[]; pen: string }): Promise<{ ok: boolean; sealed?: boolean; gone?: boolean; poem?: SignalPoem }> {
         return await call('/poem/append', {
             method: 'POST',
-            body: JSON.stringify({ device: getDeviceId(), pen: maskPen(p.pen), poemId: p.poemId, lines: p.lines }),
+            // content 是给旧 worker 的兼容字段
+            body: JSON.stringify({ device: getDeviceId(), pen: maskPen(p.pen), poemId: p.poemId, lines: p.lines, content: p.lines[0] }),
         });
     },
 
