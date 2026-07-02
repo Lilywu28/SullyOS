@@ -739,7 +739,7 @@ const MemoryDiveMode: React.FC<Props> = ({
       {/* 顶栏（薄） */}
       <div
         className="shrink-0 flex items-center justify-between px-3 pb-1.5 bg-black/70 backdrop-blur-sm border-b border-slate-800 z-20"
-        style={{ paddingTop: 'max(2.75rem, var(--safe-top))' }}
+        style={{ paddingTop: 'max(2.75rem, var(--safe-top, 0px))' }}
       >
         <div className="flex items-center gap-1">
           <button onClick={handleUserExit}

@@ -1392,7 +1392,7 @@ const WorldView: React.FC<{
             className="flex-1 overflow-y-auto no-scrollbar"
             style={{
                 background: t.pageBg,
-                paddingTop: topSafe ? 'max(3rem, var(--safe-top))' : undefined,
+                paddingTop: topSafe ? 'max(3rem, var(--safe-top, 0px))' : undefined,
                 paddingBottom: 'calc(6rem + var(--safe-bottom, 0px))',
                 boxSizing: 'border-box',
             }}

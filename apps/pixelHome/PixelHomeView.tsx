@@ -259,7 +259,7 @@ const PixelHomeView: React.FC<Props> = ({ charId, charName, charAvatar, userName
       {/* 顶部导航（潜行模式下隐藏，由 MemoryDiveMode 自带头部） */}
       {viewMode !== 'dive' && <div
         className="shrink-0 flex items-center justify-between px-4 pb-3 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700/50"
-        style={{ paddingTop: 'max(3rem, var(--safe-top))' }}
+        style={{ paddingTop: 'max(3rem, var(--safe-top, 0px))' }}
       >
         <button
           onClick={() => {
