@@ -3,6 +3,7 @@ import { useOS } from '../context/OSContext';
 import { ArrowLeft, UploadSimple, Trash, Wrench, Warning, FileArrowUp, MoonStars } from '@phosphor-icons/react';
 import { DB } from '../utils/db';
 import { creatorPartToBlobRefs, loadCreatorPartsForRender } from '../utils/creatorPartsBlob';
+import { buildBuiltinPartsPackZip, type BuiltinPackItem } from '../utils/builtinPartsPack';
 import type { CustomCreatorPart } from '../types';
 import type { ParsedPsdPart } from '../utils/psdCreatorImport';
 
@@ -71,6 +72,34 @@ const CharCreatorDevApp: React.FC = () => {
         await load();
         addToast?.('已删除', 'success');
     };
+
+    // 导出「内置素材包」ZIP（parts/*.png 二进制 + parts.json 清单）——供管理员把部件作为
+    // 内置素材随包发给所有用户，而不是每台设备各存 base64 / 把 base64 塞进 HTML 撑大体积。
+    const [exporting, setExporting] = useState(false);
+    const downloadPack = async (items: BuiltinPackItem[], hint: string) => {
+        if (!items.length) { addToast?.('没有可导出的部件', 'error'); return; }
+        setExporting(true);
+        try {
+            const { blob, plan } = await buildBuiltinPartsPackZip(items);
+            if (!plan.manifest.length) { addToast?.('没有可导出的部件（都缺类目）', 'error'); return; }
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `creator_builtin_parts_${hint}_${Date.now()}.zip`;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+            addToast?.(plan.skipped
+                ? `已导出 ${plan.manifest.length} 个内置部件（跳过 ${plan.skipped} 个缺类目）`
+                : `已导出 ${plan.manifest.length} 个内置部件`, 'success');
+        } catch (e) {
+            console.error('[CharCreatorDev] 导出内置素材包失败', e);
+            addToast?.('导出失败：' + String((e as Error)?.message || e), 'error');
+        } finally {
+            setExporting(false);
+        }
+    };
+    const toPackItem = (p: { categoryKey: string | null; name: string; src: string; shadowSrc?: string; tintable?: boolean }): BuiltinPackItem =>
+        ({ categoryKey: p.categoryKey, name: p.name, src: p.src, shadowSrc: p.shadowSrc, tintable: p.tintable });
 
     const onPsdFile = async (f: File | undefined) => {
         if (!f) return;
@@ -195,6 +224,11 @@ const CharCreatorDevApp: React.FC = () => {
                                 className="w-full rounded-xl py-2.5 text-[13px] font-bold text-black" style={{ background: 'linear-gradient(135deg,#fbbf24,#f59e0b)' }}>
                                 全部加入捏人器（{psdParts.length}）
                             </button>
+                            {/* 管理员：把这批 PSD 部件导出成「内置素材包」（PNG 文件 + 清单），可提交进仓库当全员内置 */}
+                            <button onClick={() => void downloadPack(psdParts.map(toPackItem), 'psd')} disabled={exporting}
+                                className="w-full rounded-xl py-2.5 text-[12.5px] font-bold text-white/90 border border-white/20 active:bg-white/5 disabled:opacity-50 flex items-center justify-center gap-1.5">
+                                <FileArrowUp size={15} weight="bold" />{exporting ? '打包中…' : '导出为内置素材包（PNG+清单）'}
+                            </button>
                         </div>
                     )}
                 </div>
@@ -238,6 +272,12 @@ const CharCreatorDevApp: React.FC = () => {
                 </div>
 
                 {/* 已有列表 */}
+                {parts.length > 0 && (
+                    <button onClick={() => void downloadPack(parts.map(toPackItem), 'saved')} disabled={exporting}
+                        className="w-full mb-2 rounded-xl py-2 text-[12px] font-bold text-white/90 border border-white/20 active:bg-white/5 disabled:opacity-50 flex items-center justify-center gap-1.5">
+                        <FileArrowUp size={14} weight="bold" />{exporting ? '打包中…' : `把已有 ${parts.length} 个部件导出为内置素材包`}
+                    </button>
+                )}
                 {parts.length === 0 ? (
                     <p className="text-[11px] text-white/40 py-4 text-center">还没有自定义部件。</p>
                 ) : (
