@@ -69,6 +69,8 @@ export interface PlateLLMItem {
     text: string;
     /** 引用现有条目标签（如 "U2"）= 这是对旧条目的延续/更新，继承 firstLearnedAt */
     basedOn?: string | null;
+    /** 2-4 字分类标签（家庭/居住/重要他人/工作/雷区/习惯…） */
+    tag?: string | null;
 }
 
 /**
@@ -96,7 +98,7 @@ export function violatesBedroomRule(text: string): boolean {
 export function mergePlateEntries(
     room: PlateRoom,
     existing: PlateEntry[],
-    items: Array<{ text: string; basedOn?: string | null }>,
+    items: Array<{ text: string; basedOn?: string | null; tag?: string | null }>,
     now: number,
 ): PlateEntry[] {
     const prefix = ROOM_LABEL_PREFIX[room];
@@ -116,6 +118,7 @@ export function mergePlateEntries(
             console.warn(`🚪 [RoomPlate] 卧室门牌拦截关系命名条目: "${text.slice(0, 40)}"`);
             continue;
         }
+        const tag = (item.tag || '').replace(/\s+/g, '').slice(0, 6) || undefined;
 
         const base = item.basedOn ? byLabel.get(String(item.basedOn).trim().toUpperCase()) : undefined;
         if (base && !usedIds.has(base.id)) {
@@ -124,6 +127,7 @@ export function mergePlateEntries(
             merged.push({
                 ...base,
                 text,
+                tag: tag ?? base.tag,
                 updatedAt: changed ? now : base.updatedAt,
                 sourceCount: base.sourceCount + 1,
             });
@@ -132,11 +136,12 @@ export function mergePlateEntries(
             const sameText = existing.find(e => e.text === text && !usedIds.has(e.id));
             if (sameText) {
                 usedIds.add(sameText.id);
-                merged.push({ ...sameText, sourceCount: sameText.sourceCount + 1 });
+                merged.push({ ...sameText, tag: tag ?? sameText.tag, sourceCount: sameText.sourceCount + 1 });
             } else {
                 merged.push({
                     id: generateEntryId(),
                     text,
+                    tag,
                     firstLearnedAt: now,
                     updatedAt: now,
                     sourceCount: 1,
@@ -212,12 +217,13 @@ ${materialBlock}`;
 2. **只收沉淀下来的**：跨时间稳定为真的认知才配上门牌。一时的状态、没结论的进行时，都不收。
 3. **每条 ${PLATE_ENTRY_TARGET_CHARS} 字以内**，写梗概不写叙事，不带日期不带"我记得"。
 4. **不超过各门牌的条目上限**。位置不够时留最重要的——被迫舍弃是正常的。
-5. ${userName} 直接用名字称呼。条目内容严禁使用半角双引号 "，引用一律用「」。
+5. 每条给一个 **tag**（2-4 字分类，如：家庭、居住、重要他人、工作、雷区、习惯、性格、约定、默契、技能）。
+6. ${userName} 直接用名字称呼。条目内容严禁使用半角双引号 "，引用一律用「」。
 
 ${roomBlocks}
 
 严格输出 JSON 数组（没有变化的门牌也要完整输出其保留条目）：
-[{"room": "user_room", "text": "……", "basedOn": "U0"}, {"room": "bedroom", "text": "……", "basedOn": null}]`;
+[{"room": "user_room", "text": "……", "basedOn": "U0", "tag": "家庭"}, {"room": "bedroom", "text": "……", "basedOn": null, "tag": "默契"}]`;
 
     const data = await safeFetchJson(
         `${llmConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`,

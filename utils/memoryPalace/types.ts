@@ -260,6 +260,8 @@ export interface PlateEntry {
     firstLearnedAt: number; // 首次蒸馏出这条认知的时间（"你是第三个月才跟我说家里的事"）
     updatedAt: number;      // 最近一次被合并/改写的时间
     sourceCount: number;    // 被印证的次数（提过一次 vs 反复出现）
+    /** 2-4 字分类标签（家庭/居住/重要他人/工作/雷区/习惯…），LLM 整理时给出，UI 渲染 chip 与图标 */
+    tag?: string;
 }
 
 export interface RoomPlate {
