@@ -374,73 +374,61 @@ const LiveBoard = React.memo<{
     const p = CLOCK_PHASES[phase];
     const darkFace = phase === 'night' || phase === 'late';
     return (
-        <div className="absolute inset-x-4 z-[30]" style={{ top: 'calc(var(--safe-top, 0px) + 4.55rem)' }}>
-            <div className="relative rounded-[1.2rem] p-[3px]"
-                style={{ background: PAL.card, border: `1.5px solid ${PAL.frameSoft}`, boxShadow: '0 5px 14px var(--tg-glow25)' }}>
-                <div className="flex items-stretch gap-[3px] h-[4.1rem]">
-                    {/* 主区：自定义图 或 头像+营业中 */}
-                    <div className="relative flex-1 min-w-0 rounded-l-[0.95rem] rounded-r-md overflow-hidden">
-                        {customImg ? (
-                            <TokenImg value={customImg} className="w-full h-full object-cover" draggable={false} loading="lazy" alt="" />
-                        ) : (
-                            <div className="relative w-full h-full flex items-center gap-2.5 px-3"
-                                style={{ background: 'linear-gradient(135deg, var(--tg-bg-top), var(--tg-bg-bot))' }}>
-                                <Sparkles items={[[86, 22, 8, PAL.frame, 0.7, true], [70, 76, 7, PAL.frame, 0.5], [94, 62, 6, PAL.gold, 0.7, true]]} />
-                                <div className="w-10 h-10 rounded-full p-[2px] shrink-0" style={{ border: `1.5px solid ${PAL.frame}`, boxShadow: '0 0 8px var(--tg-frame-a30)' }}>
-                                    <div className="w-full h-full rounded-full overflow-hidden" style={{ background: PAL.cardHi }}>
-                                        {avatar ? <img src={avatar} className="w-full h-full object-cover" alt="" loading="lazy" draggable={false} /> : <span className="w-full h-full flex items-center justify-center text-[13px]" style={{ color: PAL.fade }}>✦</span>}
-                                    </div>
-                                </div>
-                                <div className="min-w-0 leading-none">
-                                    <div className="flex items-center gap-1.5">
-                                        <span className="w-2 h-2 rounded-full shrink-0" style={{
-                                            background: night ? '#9a94b8' : '#7cd992',
-                                            boxShadow: night ? 'none' : '0 0 6px #7cd992',
-                                            animation: night ? undefined : 'tama-twinkle 1.8s ease-in-out infinite',
-                                        }} />
-                                        <span className="text-[13px] font-bold truncate" style={{ fontFamily: FONT_CN, color: PAL.grape }}>{night ? '休息中' : '营业中'}</span>
-                                    </div>
-                                    <div className="text-[6.5px] font-bold mt-[5px] tracking-[0.3em]" style={{ fontFamily: FONT_PX, color: PAL.fade }}>{night ? 'CLOSED' : 'ON AIR'}</div>
-                                </div>
-                            </div>
-                        )}
-                        {/* 右下角：换图 ✎ / 恢复默认 ×（小到不抢戏） */}
-                        <div className="absolute bottom-1 right-1 flex gap-1">
-                            {customImg && (
-                                <button onClick={onClear} aria-label="恢复默认看板"
-                                    className="w-[18px] h-[18px] rounded-full flex items-center justify-center active:scale-90 transition-transform"
-                                    style={{ background: 'rgba(255,255,255,0.85)', border: `1px solid ${PAL.frameSoft}`, color: PAL.ink }}>
-                                    <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" /></svg>
-                                </button>
-                            )}
-                            <button onClick={onUpload} aria-label="上传看板图"
-                                className="w-[18px] h-[18px] rounded-full flex items-center justify-center active:scale-90 transition-transform"
-                                style={{ background: 'rgba(255,255,255,0.85)', border: `1px solid ${PAL.frameSoft}`, color: PAL.ink }}>
-                                <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
-                            </button>
+        /* 一整块自然表面：没有外框套内框——整个板子就是一张图（或渐变底），
+           时间是叠在画面角上的小表盘角标（相机水印那味儿），✎/× 是半透明微钮 */
+        <div className="absolute left-4 z-[30] rounded-[1.1rem] overflow-hidden h-[4.2rem]"
+            style={{ right: '26%', top: 'calc(var(--safe-top, 0px) + 4.55rem)', border: `1.5px solid ${PAL.frameSoft}`, boxShadow: '0 5px 14px var(--tg-glow25)' }}>
+            {/* 底：自定义图铺满，或 渐变底+头像+营业中 */}
+            {customImg ? (
+                <TokenImg value={customImg} className="absolute inset-0 w-full h-full object-cover" draggable={false} loading="lazy" alt="" />
+            ) : (
+                <div className="absolute inset-0 flex items-center gap-2.5 px-3"
+                    style={{ background: 'linear-gradient(135deg, var(--tg-bg-top), var(--tg-bg-bot))' }}>
+                    <Sparkles items={[[58, 20, 8, PAL.frame, 0.7, true], [46, 78, 7, PAL.frame, 0.5], [66, 60, 6, PAL.gold, 0.7, true]]} />
+                    <div className="w-10 h-10 rounded-full p-[2px] shrink-0" style={{ border: `1.5px solid ${PAL.frame}`, boxShadow: '0 0 8px var(--tg-frame-a30)' }}>
+                        <div className="w-full h-full rounded-full overflow-hidden" style={{ background: PAL.cardHi }}>
+                            {avatar ? <img src={avatar} className="w-full h-full object-cover" alt="" loading="lazy" draggable={false} /> : <span className="w-full h-full flex items-center justify-center text-[13px]" style={{ color: PAL.fade }}>✦</span>}
                         </div>
                     </div>
-                    {/* 右区：电子钟表盘（点一下进日程） */}
-                    <button onClick={onClock}
-                        className="relative w-[7rem] shrink-0 rounded-r-[0.95rem] rounded-l-md overflow-hidden flex flex-col items-center justify-center active:opacity-90"
-                        style={{ background: p.bg }}>
-                        {darkFace && (
-                            <>
-                                <span className="absolute top-[5px] left-[9px] text-[6px]" style={{ color: '#efe8b8', animation: 'tama-twinkle 2.6s ease-in-out infinite' }}>✦</span>
-                                <span className="absolute bottom-[6px] right-[9px] text-[5px]" style={{ color: '#cdc6f0' }}>✦</span>
-                            </>
-                        )}
+                    <div className="min-w-0 leading-none">
                         <div className="flex items-center gap-1.5">
-                            <span className="w-[15px] h-[15px] shrink-0" style={{ color: p.fg }}>
-                                {darkFace ? ICON.moon : (
-                                    <svg viewBox="0 0 24 24" className="w-full h-full" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="4.2" /><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6" /></svg>
-                                )}
-                            </span>
-                            <span className="text-[19px] font-bold tabular-nums tracking-[0.05em] leading-none" style={{ fontFamily: FONT_PX, color: p.fg }}>{hh}:{mm}</span>
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{
+                                background: night ? '#9a94b8' : '#7cd992',
+                                boxShadow: night ? 'none' : '0 0 6px #7cd992',
+                                animation: night ? undefined : 'tama-twinkle 1.8s ease-in-out infinite',
+                            }} />
+                            <span className="text-[13px] font-bold truncate" style={{ fontFamily: FONT_CN, color: PAL.grape }}>{night ? '休息中' : '营业中'}</span>
                         </div>
-                        <div className="text-[7.5px] mt-[4px] tracking-[0.24em]" style={{ fontFamily: FONT_CN, color: p.sub }}>{p.label}</div>
-                    </button>
+                        <div className="text-[6.5px] font-bold mt-[5px] tracking-[0.3em]" style={{ fontFamily: FONT_PX, color: PAL.fade }}>{night ? 'CLOSED' : 'ON AIR'}</div>
+                    </div>
                 </div>
+            )}
+            {/* 右上角：小表盘角标（叠在画面上，不另起分区）；点一下进日程 */}
+            <button onClick={onClock} className="absolute top-1.5 right-1.5 rounded-lg px-2 py-[3px] flex items-center gap-1 active:scale-95 transition-transform"
+                style={{ background: p.bg, border: '1px solid rgba(255,255,255,0.75)', boxShadow: '0 2px 6px rgba(0,0,0,0.18)' }}>
+                {darkFace && <span className="absolute top-[1px] left-[4px] text-[5px]" style={{ color: '#efe8b8', animation: 'tama-twinkle 2.6s ease-in-out infinite' }}>✦</span>}
+                <span className="w-[11px] h-[11px] shrink-0" style={{ color: p.fg }}>
+                    {darkFace ? ICON.moon : (
+                        <svg viewBox="0 0 24 24" className="w-full h-full" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="4.2" /><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6" /></svg>
+                    )}
+                </span>
+                <span className="text-[12px] font-bold tabular-nums leading-none" style={{ fontFamily: FONT_PX, color: p.fg }}>{hh}:{mm}</span>
+                {(phase === 'late') && <span className="text-[7px] leading-none ml-0.5" style={{ fontFamily: FONT_CN, color: p.sub }}>夜深啦</span>}
+            </button>
+            {/* 右下角：换图 ✎ / 恢复默认 ×（半透明微钮，不抢戏） */}
+            <div className="absolute bottom-1 right-1.5 flex gap-1">
+                {customImg && (
+                    <button onClick={onClear} aria-label="恢复默认看板"
+                        className="w-[17px] h-[17px] rounded-full flex items-center justify-center active:scale-90 transition-transform"
+                        style={{ background: 'rgba(255,255,255,0.6)', color: PAL.ink }}>
+                        <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" /></svg>
+                    </button>
+                )}
+                <button onClick={onUpload} aria-label="上传看板图"
+                    className="w-[17px] h-[17px] rounded-full flex items-center justify-center active:scale-90 transition-transform"
+                    style={{ background: 'rgba(255,255,255,0.6)', color: PAL.ink }}>
+                    <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                </button>
             </div>
         </div>
     );
@@ -723,7 +711,7 @@ const WorldPortals = React.memo<{ onHome: () => void; onPixel: () => void; onDre
         { key: 'dream', label: '梦境', en: 'DREAM', icon: ICON.moon, onClick: onDream },
     ];
     return (
-        <div className="absolute right-3 z-[35] flex flex-col items-center" style={{ top: 'calc(var(--safe-top, 0px) + 9.8rem)' }}>
+        <div className="absolute right-3 z-[35] flex flex-col items-center" style={{ top: 'calc(var(--safe-top, 0px) + 5.2rem)' }}>
             {portals.map((p, i) => (
                 <React.Fragment key={p.key}>
                     {i > 0 && (
