@@ -11,7 +11,8 @@ import { roomLaunch } from '../../utils/roomLaunch';
 import TheaterPlayer from '../schedule/TheaterPlayer';
 import AppIcon from './AppIcon';
 import TokenImg from './TokenImg';
-import { useBlobRefUrl } from '../../utils/blobRef';
+import { useBlobRefUrl, putImageBlob } from '../../utils/blobRef';
+import { processImageToBlob } from '../../utils/file';
 import { FURNITURE_ICONS } from '../../utils/furnitureIcons';
 import { isDevDebugAvailable, subscribeDevDebugAvailability } from '../../utils/devDebug';
 
@@ -361,48 +362,96 @@ const CLOCK_PHASES = {
 type ClockPhase = keyof typeof CLOCK_PHASES;
 const clockPhaseOf = (h: number): ClockPhase => (h >= 23 || h < 5) ? 'late' : h < 8 ? 'dawn' : h < 17 ? 'day' : h < 20 ? 'dusk' : 'night';
 
-const HangingClock = React.memo<{ hh: string; mm: string; phase: ClockPhase; onTap: () => void }>(({ hh, mm, phase, onTap }) => {
+// ─── 直播看板（云窗位）：自定义图 / 头像+营业中（虚拟主播 ON AIR 风）+ 电子钟表盘 ──
+// 主区：用户上传的横图（存 blob，localStorage 只记 blobref 令牌）；没传图就展示
+// 角色头像 + 营业状态（白天「营业中·ON AIR」呼吸绿点，深夜自动「休息中·CLOSED」）。
+// 右区：电子钟表盘（时段换底，SVG 太阳/弯月）。点表盘进日程 App。
+const LiveBoard = React.memo<{
+    customImg: string; avatar?: string; night: boolean;
+    hh: string; mm: string; phase: ClockPhase;
+    onClock: () => void; onUpload: () => void; onClear: () => void;
+}>(({ customImg, avatar, night, hh, mm, phase, onClock, onUpload, onClear }) => {
     const p = CLOCK_PHASES[phase];
     const darkFace = phase === 'night' || phase === 'late';
     return (
-        <div className="absolute z-[30] flex flex-col items-center pointer-events-none"
-            style={{ left: '60%', transform: 'translateX(-50%)', top: 'calc(var(--safe-top, 0px) + 4.7rem)' }}>
-            {/* 两根吊绳：挂在顶部横幅正下方 */}
-            <div className="flex gap-8">
-                <span style={{ width: 1.5, height: 24, background: PAL.frameSoft }} />
-                <span style={{ width: 1.5, height: 24, background: PAL.frameSoft }} />
-            </div>
-            <button onClick={onTap} className="pointer-events-auto active:scale-95 relative rounded-xl p-[3px] -mt-px transition-transform"
-                style={{ background: PAL.card, border: `1.5px solid ${PAL.frameSoft}`, boxShadow: '0 4px 12px var(--tg-glow25)' }}>
-                <div className="relative rounded-[0.55rem] px-3 py-1.5 overflow-hidden flex items-center gap-2" style={{ background: p.bg }}>
-                    {darkFace && (
-                        <>
-                            <span className="absolute top-[3px] right-[8px] text-[6px]" style={{ color: '#efe8b8', animation: 'tama-twinkle 2.6s ease-in-out infinite' }}>✦</span>
-                            <span className="absolute bottom-[4px] right-[22px] text-[5px]" style={{ color: '#cdc6f0' }}>✦</span>
-                        </>
-                    )}
-                    {/* 相位图标：白天太阳 / 夜里弯月（SVG，无 emoji） */}
-                    <span className="w-4 h-4 shrink-0" style={{ color: p.fg }}>
-                        {darkFace ? ICON.moon : (
-                            <svg viewBox="0 0 24 24" className="w-full h-full" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="4.2" /><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6" /></svg>
+        <div className="absolute inset-x-4 z-[30]" style={{ top: 'calc(var(--safe-top, 0px) + 4.55rem)' }}>
+            <div className="relative rounded-[1.2rem] p-[3px]"
+                style={{ background: PAL.card, border: `1.5px solid ${PAL.frameSoft}`, boxShadow: '0 5px 14px var(--tg-glow25)' }}>
+                <div className="flex items-stretch gap-[3px] h-[4.1rem]">
+                    {/* 主区：自定义图 或 头像+营业中 */}
+                    <div className="relative flex-1 min-w-0 rounded-l-[0.95rem] rounded-r-md overflow-hidden">
+                        {customImg ? (
+                            <TokenImg value={customImg} className="w-full h-full object-cover" draggable={false} loading="lazy" alt="" />
+                        ) : (
+                            <div className="relative w-full h-full flex items-center gap-2.5 px-3"
+                                style={{ background: 'linear-gradient(135deg, var(--tg-bg-top), var(--tg-bg-bot))' }}>
+                                <Sparkles items={[[86, 22, 8, PAL.frame, 0.7, true], [70, 76, 7, PAL.frame, 0.5], [94, 62, 6, PAL.gold, 0.7, true]]} />
+                                <div className="w-10 h-10 rounded-full p-[2px] shrink-0" style={{ border: `1.5px solid ${PAL.frame}`, boxShadow: '0 0 8px var(--tg-frame-a30)' }}>
+                                    <div className="w-full h-full rounded-full overflow-hidden" style={{ background: PAL.cardHi }}>
+                                        {avatar ? <img src={avatar} className="w-full h-full object-cover" alt="" loading="lazy" draggable={false} /> : <span className="w-full h-full flex items-center justify-center text-[13px]" style={{ color: PAL.fade }}>✦</span>}
+                                    </div>
+                                </div>
+                                <div className="min-w-0 leading-none">
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="w-2 h-2 rounded-full shrink-0" style={{
+                                            background: night ? '#9a94b8' : '#7cd992',
+                                            boxShadow: night ? 'none' : '0 0 6px #7cd992',
+                                            animation: night ? undefined : 'tama-twinkle 1.8s ease-in-out infinite',
+                                        }} />
+                                        <span className="text-[13px] font-bold truncate" style={{ fontFamily: FONT_CN, color: PAL.grape }}>{night ? '休息中' : '营业中'}</span>
+                                    </div>
+                                    <div className="text-[6.5px] font-bold mt-[5px] tracking-[0.3em]" style={{ fontFamily: FONT_PX, color: PAL.fade }}>{night ? 'CLOSED' : 'ON AIR'}</div>
+                                </div>
+                            </div>
                         )}
-                    </span>
-                    <div className="leading-none text-left">
-                        <div className="text-[17px] font-bold tabular-nums tracking-[0.05em]" style={{ fontFamily: FONT_PX, color: p.fg }}>{hh}:{mm}</div>
-                        <div className="text-[7.5px] mt-[3px] tracking-[0.2em]" style={{ fontFamily: FONT_CN, color: p.sub }}>{p.label}</div>
+                        {/* 右下角：换图 ✎ / 恢复默认 ×（小到不抢戏） */}
+                        <div className="absolute bottom-1 right-1 flex gap-1">
+                            {customImg && (
+                                <button onClick={onClear} aria-label="恢复默认看板"
+                                    className="w-[18px] h-[18px] rounded-full flex items-center justify-center active:scale-90 transition-transform"
+                                    style={{ background: 'rgba(255,255,255,0.85)', border: `1px solid ${PAL.frameSoft}`, color: PAL.ink }}>
+                                    <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" /></svg>
+                                </button>
+                            )}
+                            <button onClick={onUpload} aria-label="上传看板图"
+                                className="w-[18px] h-[18px] rounded-full flex items-center justify-center active:scale-90 transition-transform"
+                                style={{ background: 'rgba(255,255,255,0.85)', border: `1px solid ${PAL.frameSoft}`, color: PAL.ink }}>
+                                <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                            </button>
+                        </div>
                     </div>
+                    {/* 右区：电子钟表盘（点一下进日程） */}
+                    <button onClick={onClock}
+                        className="relative w-[7rem] shrink-0 rounded-r-[0.95rem] rounded-l-md overflow-hidden flex flex-col items-center justify-center active:opacity-90"
+                        style={{ background: p.bg }}>
+                        {darkFace && (
+                            <>
+                                <span className="absolute top-[5px] left-[9px] text-[6px]" style={{ color: '#efe8b8', animation: 'tama-twinkle 2.6s ease-in-out infinite' }}>✦</span>
+                                <span className="absolute bottom-[6px] right-[9px] text-[5px]" style={{ color: '#cdc6f0' }}>✦</span>
+                            </>
+                        )}
+                        <div className="flex items-center gap-1.5">
+                            <span className="w-[15px] h-[15px] shrink-0" style={{ color: p.fg }}>
+                                {darkFace ? ICON.moon : (
+                                    <svg viewBox="0 0 24 24" className="w-full h-full" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="4.2" /><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6" /></svg>
+                                )}
+                            </span>
+                            <span className="text-[19px] font-bold tabular-nums tracking-[0.05em] leading-none" style={{ fontFamily: FONT_PX, color: p.fg }}>{hh}:{mm}</span>
+                        </div>
+                        <div className="text-[7.5px] mt-[4px] tracking-[0.24em]" style={{ fontFamily: FONT_CN, color: p.sub }}>{p.label}</div>
+                    </button>
                 </div>
-            </button>
+            </div>
         </div>
     );
 });
 
-// ─── 天花板小挂饰：从横幅下垂两颗 ✦，轻轻摇（transform-only）────────────
+// ─── 天花板小挂饰：从看板下垂两颗 ✦，轻轻摇（transform-only）────────────
 const CeilingCharms = React.memo(() => (
-    <div className="absolute inset-x-0 z-[28] pointer-events-none" style={{ top: 'calc(var(--safe-top, 0px) + 4.7rem)' }}>
+    <div className="absolute inset-x-0 z-[28] pointer-events-none" style={{ top: 'calc(var(--safe-top, 0px) + 9.1rem)' }}>
         {[
-            { x: '41%', drop: 15, size: 9, color: PAL.gold },
-            { x: '77%', drop: 24, size: 8, color: PAL.frame },
+            { x: '38%', drop: 13, size: 9, color: PAL.gold },
+            { x: '60%', drop: 22, size: 8, color: PAL.frame },
         ].map((c, i) => (
             <div key={i} className="absolute flex flex-col items-center origin-top" style={{ left: c.x, animation: `tama-sway ${6 + i * 1.5}s ease-in-out ${i * 0.8}s infinite alternate` }}>
                 <span style={{ width: 1, height: c.drop, background: PAL.frameSoft }} />
@@ -607,7 +656,7 @@ const FullStage = React.memo<{
 // 跟随界面风格（细线半透卡 + 内描边），端端正正不摇晃。
 const HangingSign = React.memo<{ text: string; onTap: () => void }>(({ text, onTap }) => (
     <div className="absolute left-[6%] z-[30] flex flex-col items-center pointer-events-none"
-        style={{ top: 'calc(var(--safe-top, 0px) + 4.7rem)' }}>
+        style={{ top: 'calc(var(--safe-top, 0px) + 9.1rem)' }}>
         {/* 两根吊绳（挂在顶部横幅正下方，不悬空） */}
         <div className="flex gap-6">
             <span style={{ width: 1.5, height: 24, background: PAL.frameSoft }} />
@@ -634,7 +683,7 @@ const DayScroll = React.memo<{ slots: { time: string; text: string; passed: bool
         <div className="absolute inset-0 z-[85]" onClick={onClose} />
         <div className="absolute left-4 right-[22%] z-[86] rounded-2xl px-4 pt-3 pb-4 animate-pop-in"
             style={{
-                top: 'calc(var(--safe-top, 0px) + 7.8rem)',
+                top: 'calc(var(--safe-top, 0px) + 12.2rem)',
                 background: PAL.cardHi,
                 border: `1.5px solid ${PAL.frameSoft}`,
                 boxShadow: '0 10px 26px var(--tg-glow35)',
@@ -674,7 +723,7 @@ const WorldPortals = React.memo<{ onHome: () => void; onPixel: () => void; onDre
         { key: 'dream', label: '梦境', en: 'DREAM', icon: ICON.moon, onClick: onDream },
     ];
     return (
-        <div className="absolute right-3 z-[35] flex flex-col items-center" style={{ top: 'calc(var(--safe-top, 0px) + 7.5rem)' }}>
+        <div className="absolute right-3 z-[35] flex flex-col items-center" style={{ top: 'calc(var(--safe-top, 0px) + 9.8rem)' }}>
             {portals.map((p, i) => (
                 <React.Fragment key={p.key}>
                     {i > 0 && (
@@ -827,6 +876,30 @@ const TamagotchiHome: React.FC = () => {
     // 世界化挂件的开合：日程纸卷（点墙上木牌）/ 地板手机弹窗
     const [scrollOpen, setScrollOpen] = useState(false);
     const [phoneOpen, setPhoneOpen] = useState(false);
+    // 直播看板自定义图：blob 存库，localStorage 只记 blobref 令牌（全局一张，跨角色共用）
+    const boardInputRef = useRef<HTMLInputElement>(null);
+    const [boardImg, setBoardImg] = useState<string>(() => {
+        try { return localStorage.getItem('tama_board_img') || ''; } catch { return ''; }
+    });
+    const onBoardFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+        try {
+            const blob = await processImageToBlob(file, { quality: 0.92, maxWidth: 1200 });
+            const ref = await putImageBlob(blob);
+            setBoardImg(ref);
+            try { localStorage.setItem('tama_board_img', ref); } catch { /* 存不进也能用到刷新前 */ }
+            addToast('看板图已更新 ✦', 'success');
+        } catch (err: any) {
+            addToast(err?.message || '图片处理失败', 'error');
+        }
+    }, [addToast]);
+    const clearBoardImg = useCallback(() => {
+        setBoardImg('');
+        try { localStorage.removeItem('tama_board_img'); } catch { /* ignore */ }
+        // 旧 blob 不主动删（见 blobRef 注释的防碎图策略），交给后续 GC
+    }, []);
     // 日程详细演绎（小剧场）：点纸卷里「偷看此刻」时生成并播放
     const [theater, setTheater] = useState<{ schedule: DailySchedule; slotIndex: number } | null>(null);
     const [theaterGenerating, setTheaterGenerating] = useState(false);
@@ -1130,10 +1203,15 @@ const TamagotchiHome: React.FC = () => {
                         nudge={nudge} say={say} onItemTap={onItemTap} onChat={openChat}
                     />
 
-                    {/* 挂在横幅下的一排：日程挂牌（左）· 小电子钟（中右）· 天花板 ✦ 挂饰 */}
+                    {/* 直播看板（自定义图 / 头像+营业中 + 电子钟表盘），下面挂日程牌和 ✦ 挂饰 */}
+                    <LiveBoard customImg={boardImg} avatar={char.avatar} night={night}
+                        hh={hh} mm={mm} phase={clockPhaseOf(virtualTime.hours)}
+                        onClock={() => openApp(AppID.Schedule)}
+                        onUpload={() => boardInputRef.current?.click()}
+                        onClear={clearBoardImg} />
+                    <input type="file" ref={boardInputRef} className="hidden" accept="image/*" onChange={onBoardFile} />
                     <CeilingCharms />
                     <HangingSign text={signText} onTap={() => setScrollOpen(true)} />
-                    <HangingClock hh={hh} mm={mm} phase={clockPhaseOf(virtualTime.hours)} onTap={() => openApp(AppID.Schedule)} />
                     {scrollOpen && <DayScroll slots={scrollSlots} onPeek={runTheater} onClose={() => setScrollOpen(false)} />}
 
                     {/* 右侧世界之门：家园 / 像素家园 / 梦境 */}
