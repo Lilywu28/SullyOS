@@ -15,6 +15,7 @@ import { DEFAULT_ARCHIVE_PROMPTS } from '../components/chat/ChatConstants';
 import ImpressionPanel from '../components/character/ImpressionPanel';
 import RoomPlatePanel from '../components/character/RoomPlatePanel';
 import MemoryArchivist from '../components/character/MemoryArchivist';
+import ChibiStudio from '../components/character/ChibiStudio';
 import { safeFetchJson, extractContent } from '../utils/safeApi';
 import { fetchMiniMaxVoices, MiniMaxVoiceItem } from '../utils/minimaxVoice';
 import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
@@ -138,6 +139,8 @@ const Character: React.FC = () => {
       });
   };
   const [detailTab, setDetailTab] = useState<'identity' | 'memory' | 'impression' | 'plates'>('identity');
+  // QQ捏人工坊（手办柜）全屏覆盖层
+  const [showChibiStudio, setShowChibiStudio] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<CharacterProfile | null>(null);
   const [isCompressing, setIsCompressing] = useState(false);
@@ -1264,7 +1267,23 @@ ${isInitialGeneration ? `
                                    />
                                </div>
                            </div>
-                           
+
+                           {/* QQ捏人工坊入口：小小窝 / 彼方 / 特别时光 三处 Q 版形象统一管理 */}
+                           <button
+                               onClick={() => setShowChibiStudio(true)}
+                               className="w-full relative overflow-hidden rounded-2xl px-4 py-3 flex items-center gap-3 text-left border border-violet-200/70 shadow-[0_6px_18px_rgba(140,120,200,0.18)] active:scale-[0.99] transition-transform"
+                               style={{ background: 'linear-gradient(135deg, #2b2150 0%, #171130 100%)' }}
+                           >
+                               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[44px] leading-none text-white/[0.06] pointer-events-none select-none">❋</span>
+                               <span className="w-9 h-9 rounded-xl flex items-center justify-center text-lg shrink-0"
+                                   style={{ background: 'linear-gradient(135deg, rgba(244,163,202,0.35), rgba(143,155,244,0.35))' }}>🧸</span>
+                               <span className="flex-1 min-w-0">
+                                   <span className="block text-[13px] font-bold text-white tracking-wide">QQ捏人 · 手办柜</span>
+                                   <span className="block text-[10px] text-indigo-200/60 mt-0.5 truncate">小小窝 / 彼方 / 特别时光 三处 Q 版形象，可各捏各的或一键同步</span>
+                               </span>
+                               <span className="text-indigo-200/50 text-xs shrink-0">›</span>
+                           </button>
+
                            <div>
                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">分组</label>
                                <div className="flex gap-2 items-center">
@@ -1636,6 +1655,19 @@ ${isInitialGeneration ? `
            </div>
        )}
        
+       {/* QQ捏人工坊：直接写库（sprites / vrState / specialMomentRecords / chibiStudio），
+           关闭时把最新角色数据拉回 formData——否则后续编辑会用旧副本 auto-save 盖掉工坊成果 */}
+       {showChibiStudio && formData && (
+           <ChibiStudio
+               charId={formData.id}
+               onClose={() => {
+                   setShowChibiStudio(false);
+                   const latest = characters.find(c => c.id === formData.id);
+                   if (latest) setFormData(latest);
+               }}
+           />
+       )}
+
        {/* Modals ... */}
        <Modal isOpen={showImportModal} title="记忆导入/清洗" onClose={() => setShowImportModal(false)} footer={<><button onClick={() => setShowImportModal(false)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-2xl">取消</button><button onClick={handleImportMemories} disabled={isProcessingMemory} className="flex-1 py-3 bg-primary text-white font-bold rounded-2xl shadow-lg shadow-primary/30 flex items-center justify-center gap-2">{isProcessingMemory && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>}{isProcessingMemory ? '处理中...' : '开始执行'}</button></>}>
            <div className="space-y-3"><div className="text-xs text-slate-400 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100">AI 将自动整理乱序文本为记忆档案。</div>{importStatus && <div className="text-xs text-primary font-medium">{importStatus}</div>}<textarea value={importText} onChange={e => setImportText(e.target.value)} placeholder="在此粘贴文本..." className="w-full h-32 bg-slate-100 border-none rounded-2xl px-4 py-3 text-sm text-slate-700 resize-none focus:ring-2 focus:ring-primary/20 transition-all"/></div>

@@ -1782,6 +1782,32 @@ export interface SpecialMomentRecord {
     customData?: Record<string, any>;
 }
 
+// --- QQ捏人工坊（神经链接） ---
+
+/** 工坊槽位：room=小小窝房间立绘 / vr=彼方 chibi / like520=特别时光 520 大头贴 */
+export type ChibiStudioSlotId = 'room' | 'vr' | 'like520';
+
+export interface ChibiStudioSlot {
+    /** 捏人器导出的完整 state（选件+换色+翻转…），再编辑时经 init.savedState 整套还原 */
+    state?: any;
+    /**
+     * 透明 PNG dataURL 兜底展示图。room/vr 的形象本体以各 App 自己的字段为准
+     * （sprites.chibi / vrState.chibi.img）；like520 未通关时靠这里展示 + 预填活动捏人器。
+     */
+    img?: string;
+    updatedAt?: number;
+}
+
+/**
+ * QQ捏人工坊：统一管理一只角色在三处的 Q 版形象，可各捏各的、也可一键同步。
+ * 图片本体写进各 App 自己的消费字段，这里主要存「再编辑用的完整 state」。
+ */
+export interface ChibiStudioData {
+    room?: ChibiStudioSlot;
+    vr?: ChibiStudioSlot;
+    like520?: ChibiStudioSlot;
+}
+
 // --- BANK / SHOP GAME TYPES (NEW) ---
 export interface BankTransaction {
     id: string;
@@ -2047,6 +2073,9 @@ export interface CharacterProfile {
 
   savedDateState?: DateState;
   specialMomentRecords?: Record<string, SpecialMomentRecord>;
+
+  /** QQ捏人工坊（神经链接）：三处 Q 版形象的捏人器 state 与 520 兜底图，见 ChibiStudioData */
+  chibiStudio?: ChibiStudioData;
 
   // 小红书 per-character toggle
   xhsEnabled?: boolean;

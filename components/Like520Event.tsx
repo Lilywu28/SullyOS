@@ -107,11 +107,11 @@ const TUCAO_OPTIONS: { key: Like520TucaoKey; label: string }[] = [
 // Sully 识别（专属预设）
 // ============================================================
 
-const isSullyChar = (char: CharacterProfile): boolean => {
+export const isSullyChar = (char: CharacterProfile): boolean => {
     return (char.name || '').toLowerCase().includes('sully');
 };
 
-const sullyPresets = (): Record<string, string> => ({
+export const sullyPresets = (): Record<string, string> => ({
     skin: 'skin_1',
     fronthair: 'fronthair_99',
     back1: 'back1_99',
@@ -126,6 +126,8 @@ export interface CreatorIframeProps {
     mode: 'char' | 'user';
     charName?: string;
     presets?: Record<string, any>;
+    /** 捏人器导出的完整 state：整套还原选件+换色+翻转（草稿仍优先；比 presets 优先） */
+    savedState?: any;
     isSully?: boolean;
     /** 唯一草稿键（如彼方按 char.id），让草稿按角色隔离、与 520 互不串 */
     draftKey?: string;
@@ -138,7 +140,7 @@ export interface CreatorIframeProps {
 
 const CHAR_CREATOR_URL = (((import.meta as any).env?.BASE_URL ?? '/') + 'like520/character_creator.html').replace(/\/+/g, '/');
 
-export const CreatorIframe: React.FC<CreatorIframeProps> = ({ mode, charName, presets, isSully, draftKey, title, subtitle, onConfirm }) => {
+export const CreatorIframe: React.FC<CreatorIframeProps> = ({ mode, charName, presets, savedState, isSully, draftKey, title, subtitle, onConfirm }) => {
     const iframeRef = useRef<HTMLIFrameElement>(null);
     // 自定义部件（开发模式上传）—— 异步从 DB 读出
     const extraItemsRef = useRef<any[]>([]);
@@ -147,8 +149,8 @@ export const CreatorIframe: React.FC<CreatorIframeProps> = ({ mode, charName, pr
 
     // 最新参数 / 回调放 ref：让订阅与初始化的 effect 只跑一次，
     // 避免父组件重渲导致反复重发 init（会触发 applyLike520Init 重置当前选择 → "弹回上一个"）
-    const paramsRef = useRef({ mode, charName, presets, isSully, draftKey, title, subtitle });
-    paramsRef.current = { mode, charName, presets, isSully, draftKey, title, subtitle };
+    const paramsRef = useRef({ mode, charName, presets, savedState, isSully, draftKey, title, subtitle });
+    paramsRef.current = { mode, charName, presets, savedState, isSully, draftKey, title, subtitle };
     const onConfirmRef = useRef(onConfirm);
     onConfirmRef.current = onConfirm;
 
@@ -3423,6 +3425,7 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
                         mode="char"
                         charName={char.name}
                         presets={isSullyChar(char) ? sullyPresets() : undefined}
+                        savedState={char.chibiStudio?.like520?.state ?? existingData?.charChibi?.state}
                         isSully={isSullyChar(char)}
                         onConfirm={handleCharChibiConfirm}
                     />

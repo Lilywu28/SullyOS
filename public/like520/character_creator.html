@@ -679,9 +679,10 @@ function applyLike520Init(init) {
   }
   // 运行时注入自定义部件（开发模式上传的）
   mergeExtraItems(init.extraItems);
-  // 先看有没有上次的草稿；有就恢复，没就走 presets
+  // 优先级：未确认的草稿 > 宿主传来的完整 savedState（QQ捏人工坊再编辑用）> presets
   const draftLoaded = tryLoadDraft();
-  if (!draftLoaded && init.presets && typeof init.presets === 'object') {
+  const savedLoaded = !draftLoaded && !!init.savedState && applyFullState(init.savedState);
+  if (!draftLoaded && !savedLoaded && init.presets && typeof init.presets === 'object') {
     Object.entries(init.presets).forEach(([key, itemId]) => {
       if (state.selected.hasOwnProperty(key)) {
         if (Array.isArray(state.selected[key])) {
@@ -2525,21 +2526,28 @@ function saveDraft() {
     } catch (e) { console.warn('[520][cc] save draft failed', e); }
   }, 600);
 }
+/* 把一份导出过的完整 state 拷回当前 state（草稿恢复 / init.savedState 共用）。
+   presets 只有 selected，这里连换色/翻转/眼型/发色联动一起还原。 */
+function applyFullState(d) {
+  if (!d || typeof d !== 'object') return false;
+  if (d.selected) state.selected = d.selected;
+  if (d.tintColor) state.tintColor = d.tintColor;
+  if (d.itemColor) state.itemColor = d.itemColor;
+  if (d.flipped) state.flipped = d.flipped;
+  if (d.eyeSide) state.eyeSide = d.eyeSide;
+  if (d.hairLinked) state.hairLinked = d.hairLinked;
+  if (d.activeItemFocus) state.activeItemFocus = d.activeItemFocus;
+  if (typeof d.preserveLineart === 'number') state.preserveLineart = d.preserveLineart;
+  return true;
+}
+
 function tryLoadDraft() {
   if (!IS_EMBEDDED) return false;
   try {
     const raw = localStorage.getItem(getDraftKey());
     if (!raw) return false;
     const d = JSON.parse(raw);
-    if (!d || typeof d !== 'object') return false;
-    if (d.selected) state.selected = d.selected;
-    if (d.tintColor) state.tintColor = d.tintColor;
-    if (d.itemColor) state.itemColor = d.itemColor;
-    if (d.flipped) state.flipped = d.flipped;
-    if (d.eyeSide) state.eyeSide = d.eyeSide;
-    if (d.hairLinked) state.hairLinked = d.hairLinked;
-    if (d.activeItemFocus) state.activeItemFocus = d.activeItemFocus;
-    if (typeof d.preserveLineart === 'number') state.preserveLineart = d.preserveLineart;
+    if (!applyFullState(d)) return false;
     console.log('[520][cc] 恢复上次草稿');
     return true;
   } catch (e) {

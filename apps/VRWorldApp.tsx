@@ -2821,6 +2821,7 @@ const ChibiEditor: React.FC<{
                 </div>
                 <div className="flex-1 min-h-0">
                     <CreatorIframe mode="char" charName={char.name} isSully={isSully} presets={presets}
+                        savedState={existing?.state}
                         draftKey={`vr_${char.id}`} title={`捏一个小人 · ${char.name}`} subtitle="彼方 · CHIBI"
                         onConfirm={onConfirm} />
                 </div>
@@ -2891,6 +2892,7 @@ const UserChibiEditor: React.FC<{
         return (
             <div className="fixed inset-0 z-[60] flex flex-col bg-black" style={{ paddingTop: VR_TOP }}>
                 <CreatorIframe mode="user" charName={userName} presets={presets}
+                    savedState={existing?.state}
                     draftKey="vr_user" title={`捏一个你自己 · ${userName}`} subtitle="彼方 · 你的 CHIBI"
                     onConfirm={onConfirm} />
             </div>
