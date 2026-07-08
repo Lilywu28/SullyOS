@@ -120,6 +120,9 @@ const makeVars = (st: TgStyle): React.CSSProperties => {
             '--tg-pink': hsl(accentH, gold ? 48 : 60, 76),
             '--tg-hot': hsl(accentH, gold ? 52 : 62, 66),
             '--tg-peri': hsl(h - 31, textSat(38), 72),
+            '--tg-macc': hsl(lineH, gold ? 52 : (mute ? 25 : 62), 62),
+            '--tg-macc-soft': hsl(lineH, gold ? 48 : (mute ? 22 : 58), 74),
+            '--tg-macc-glow60': hsl(lineH, 55, 58, 0.6),
             '--tg-rim3': hsl(h, sat(30), 40),
             '--tg-heart': hsl(accentH, gold ? 48 : 58, 76),
             '--tg-heart-deep': hsl(accentH, gold ? 52 : 60, 68),
@@ -152,6 +155,9 @@ const makeVars = (st: TgStyle): React.CSSProperties => {
         '--tg-pink': hsl(accentH, 76, 78),
         '--tg-hot': hsl(accentH, 70, 62),
         '--tg-peri': hsl(h - 31, sat(58), 76),
+        '--tg-macc': hsl(lineH, gold ? 50 : (mute ? 25 : 62), 55),
+        '--tg-macc-soft': hsl(lineH, gold ? 46 : (mute ? 22 : 58), 68),
+        '--tg-macc-glow60': hsl(lineH, 55, 52, 0.5),
         '--tg-rim3': hsl(h, sat(42), 84),
         '--tg-heart': hsl(accentH, 70, 78),
         '--tg-heart-deep': hsl(accentH, 66, 70),
@@ -367,38 +373,47 @@ const clockPhaseOf = (h: number): ClockPhase => (h >= 23 || h < 5) ? 'late' : h 
 // 排版层：营业状态（白天「营业中·ON AIR」呼吸绿点，深夜「休息中·CLOSED」）+
 // 裸排电子时间（有图时用户可自定义文字色，默认白+阴影；无图走主题深字）。
 const LiveBoard = React.memo<{
-    customImg: string; fg: string; avatar?: string; night: boolean;
+    customImg: string; fg: string; avatar?: string; night: boolean; dark: boolean;
     hh: string; mm: string; phase: ClockPhase;
     onClock: () => void;
-}>(({ customImg, fg, avatar, night, hh, mm, phase, onClock }) => {
+}>(({ customImg, fg, avatar, night, dark, hh, mm, phase, onClock }) => {
     const darkFace = phase === 'night' || phase === 'late';
     const bgImg = customImg || avatar || '';
-    // 主播风暗色玻璃板：底图永远压暗，文字默认白（可自定义色），点缀走主题强调色
-    const glow = '0 0 10px var(--tg-hotglow60), 0 1px 3px rgba(0,0,0,0.6)';
+    // 跟随明暗：暗主题=暗色玻璃+白字；浅主题=奶白玻璃+主题深字。fg 空=自动，用户选过就用用户的。
+    const inkAuto = dark ? '#ffffff' : 'var(--tg-grape)';
+    const ink = fg || inkAuto;
+    const sub = dark ? 'rgba(255,255,255,0.75)' : 'var(--tg-ink)';
+    const dim = dark ? 'rgba(255,255,255,0.45)' : 'var(--tg-fade)';
+    const glow = dark
+        ? '0 0 10px var(--tg-macc-glow60), 0 1px 3px rgba(0,0,0,0.6)'
+        : '0 0 8px rgba(255,255,255,0.9), 0 1px 2px rgba(255,255,255,0.7)';
+    const scrim = dark
+        ? 'linear-gradient(100deg, rgba(15,11,28,0.88) 0%, rgba(15,11,28,0.55) 48%, rgba(15,11,28,0.82) 100%)'
+        : 'linear-gradient(100deg, rgba(253,250,246,0.92) 0%, rgba(253,250,246,0.62) 48%, rgba(253,250,246,0.88) 100%)';
     return (
         <div className="absolute inset-x-4 z-[32] rounded-[1.15rem] overflow-hidden h-[4.8rem]"
-            style={{ top: 'calc(var(--safe-top, 0px) + 4.55rem)', border: `1.5px solid ${PAL.frameSoft}`, boxShadow: '0 6px 16px rgba(0,0,0,0.35)' }}>
-            {/* 底：自定义图，或角色头像拉伸铺底（攻略本选人那味儿）；统一压暗出玻璃感 */}
+            style={{ top: 'calc(var(--safe-top, 0px) + 4.55rem)', border: `1.5px solid ${PAL.frameSoft}`, boxShadow: dark ? '0 6px 16px rgba(0,0,0,0.35)' : '0 6px 16px var(--tg-glow25)' }}>
+            {/* 底：自定义图，或角色头像拉伸铺底（攻略本选人那味儿）；按明暗罩玻璃纱 */}
             {bgImg ? (
                 <TokenImg value={bgImg} className="absolute inset-0 w-full h-full object-cover" draggable={false} loading="lazy" alt="" />
             ) : (
-                <div className="absolute inset-0" style={{ background: 'linear-gradient(120deg, #241f3e, #17132b)' }} />
+                <div className="absolute inset-0" style={{ background: dark ? 'linear-gradient(120deg, var(--tg-bg-top), var(--tg-bg-bot))' : 'linear-gradient(120deg, var(--tg-bg-top), var(--tg-bg-bot))' }} />
             )}
-            <div className="absolute inset-0" style={{ background: 'linear-gradient(100deg, rgba(15,11,28,0.88) 0%, rgba(15,11,28,0.55) 48%, rgba(15,11,28,0.82) 100%)' }} />
+            <div className="absolute inset-0" style={{ background: scrim }} />
             {/* 顶部玻璃高光丝 */}
             <div className="absolute inset-x-0 top-0 h-[40%]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.09), transparent)' }} />
 
-            {/* 赛博角标装饰层（全静态）：三点 / 角括线 / 准星 / 闪电 / 星芒 / 虚线 */}
+            {/* 赛博角标装饰层（全静态）：三点 / 角括线 / 准星 / 闪电 / 星芒 / 虚线——点缀全走主题主色 */}
             <div className="absolute inset-0 pointer-events-none">
                 <div className="absolute top-2 right-2.5 flex gap-1">
-                    {[0, 1, 2].map(i => <span key={i} className="w-[5px] h-[5px] rounded-full" style={{ border: '1px solid rgba(255,255,255,0.55)' }} />)}
+                    {[0, 1, 2].map(i => <span key={i} className="w-[5px] h-[5px] rounded-full" style={{ border: `1px solid ${dark ? 'rgba(255,255,255,0.55)' : 'var(--tg-frame)'}` }} />)}
                 </div>
                 <span className="absolute top-1.5 left-2 w-5 h-3" style={{ borderLeft: '1px solid var(--tg-frame-a30)', borderTop: '1px solid var(--tg-frame-a30)' }} />
                 <span className="absolute bottom-1.5 right-2 w-5 h-3" style={{ borderRight: '1px solid var(--tg-frame-a30)', borderBottom: '1px solid var(--tg-frame-a30)' }} />
                 <span className="absolute bottom-2 left-2 right-[55%] border-t border-dashed" style={{ borderColor: 'var(--tg-frame-a22)' }} />
-                <svg viewBox="0 0 24 24" className="absolute left-2 bottom-4 w-2.5 h-2.5" fill="var(--tg-hot)" opacity="0.8"><path d="M13 2 4.5 13.5h5L10 22l8.5-11.5h-5z" /></svg>
+                <svg viewBox="0 0 24 24" className="absolute left-2 bottom-4 w-2.5 h-2.5" fill="var(--tg-macc)" opacity="0.85"><path d="M13 2 4.5 13.5h5L10 22l8.5-11.5h-5z" /></svg>
                 <svg viewBox="0 0 24 24" className="absolute right-3 bottom-4 w-3 h-3" fill="none" stroke="var(--tg-frame)" strokeWidth="1.4" opacity="0.5"><circle cx="12" cy="12" r="5.5" /><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4" /></svg>
-                <Sparkles items={[[3.5, 26, 9, '#fff', 0.85, true], [30, 16, 7, 'var(--tg-pink)', 0.8], [35, 78, 6, '#fff', 0.6], [63, 24, 7, '#fff', 0.7, true], [96, 55, 7, 'var(--tg-pink)', 0.7, true]]} />
+                <Sparkles items={[[3.5, 26, 9, dark ? '#fff' : 'var(--tg-macc)', 0.85, true], [30, 16, 7, 'var(--tg-macc-soft)', 0.8], [35, 78, 6, dark ? '#fff' : 'var(--tg-frame)', 0.6], [63, 24, 7, dark ? '#fff' : 'var(--tg-macc)', 0.7, true], [96, 55, 7, 'var(--tg-macc-soft)', 0.7, true]]} />
             </div>
 
             {/* 排版层：左 LIVE+营业中+ON AIR ／ 右 TIME+大数字+渐变下划线 */}
@@ -406,35 +421,35 @@ const LiveBoard = React.memo<{
                 <div className="relative min-w-0 leading-none">
                     {/* 左上 /// 强调斜线 */}
                     <div className="absolute -top-2.5 -left-1.5 flex gap-[3px]" style={{ transform: 'rotate(-18deg)' }}>
-                        {[7, 10, 8].map((h2, i) => <span key={i} className="w-[3px] rounded-full" style={{ height: h2, background: 'var(--tg-hot)', boxShadow: '0 0 5px var(--tg-hotglow60)' }} />)}
+                        {[7, 10, 8].map((h2, i) => <span key={i} className="w-[3px] rounded-full" style={{ height: h2, background: 'var(--tg-macc)', boxShadow: '0 0 5px var(--tg-macc-glow60)' }} />)}
                     </div>
                     <div className="flex items-center gap-1.5 mb-1.5 pl-3">
                         <span className="px-2 py-[2px] rounded-full flex items-center gap-1"
-                            style={{ background: night ? 'rgba(140,135,165,0.45)' : 'linear-gradient(135deg, var(--tg-pink), var(--tg-hot))', border: '1px solid rgba(255,255,255,0.5)' }}>
+                            style={{ background: night ? 'rgba(140,135,165,0.45)' : 'linear-gradient(135deg, var(--tg-macc-soft), var(--tg-macc))', border: '1px solid rgba(255,255,255,0.55)' }}>
                             <span className="w-1 h-1 rounded-full bg-white" style={{ animation: night ? undefined : 'tama-twinkle 1.8s ease-in-out infinite' }} />
                             <span className="text-[7px] font-bold tracking-[0.22em] text-white" style={{ fontFamily: FONT_PX }}>{night ? 'REST' : 'LIVE'}</span>
                         </span>
                     </div>
-                    <div className="text-[19px] font-bold truncate" style={{ fontFamily: FONT_CN, color: fg, textShadow: glow, letterSpacing: '0.12em' }}>{night ? '休息中' : '营业中'}</div>
+                    <div className="text-[19px] font-bold truncate" style={{ fontFamily: FONT_CN, color: ink, textShadow: glow, letterSpacing: '0.12em' }}>{night ? '休息中' : '营业中'}</div>
                     <div className="flex items-center gap-1.5 mt-1.5">
-                        <span className="text-[6px] tracking-[0.2em]" style={{ color: 'rgba(255,255,255,0.45)' }}>·····</span>
-                        <span className="text-[7px] font-bold tracking-[0.34em]" style={{ fontFamily: FONT_PX, color: 'rgba(255,255,255,0.75)' }}>{night ? 'OFF AIR' : 'ON AIR'}</span>
-                        <span className="text-[6px] tracking-[0.2em]" style={{ color: 'rgba(255,255,255,0.45)' }}>·····</span>
+                        <span className="text-[6px] tracking-[0.2em]" style={{ color: dim }}>·····</span>
+                        <span className="text-[7px] font-bold tracking-[0.34em]" style={{ fontFamily: FONT_PX, color: sub }}>{night ? 'OFF AIR' : 'ON AIR'}</span>
+                        <span className="text-[6px] tracking-[0.2em]" style={{ color: dim }}>·····</span>
                     </div>
                 </div>
                 {/* 右：电子时间（点一下进日程） */}
                 <button onClick={onClock} className="shrink-0 leading-none text-right active:scale-95 transition-transform">
                     <div className="flex items-center justify-end gap-1.5 mb-1">
-                        <span className="w-[11px] h-[11px]" style={{ color: 'rgba(255,255,255,0.7)' }}>
+                        <span className="w-[11px] h-[11px]" style={{ color: sub }}>
                             {darkFace ? ICON.moon : (
                                 <svg viewBox="0 0 24 24" className="w-full h-full" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="8" /><path d="M12 7.5V12l3 2" /></svg>
                             )}
                         </span>
-                        <span className="text-[7px] font-bold tracking-[0.34em]" style={{ fontFamily: FONT_PX, color: 'rgba(255,255,255,0.7)' }}>{phase === 'late' ? '夜深啦' : 'TIME'}</span>
+                        <span className="text-[7px] font-bold tracking-[0.34em]" style={{ fontFamily: FONT_PX, color: sub }}>{phase === 'late' ? '夜深啦' : 'TIME'}</span>
                     </div>
-                    <div className="text-[24px] font-bold tabular-nums" style={{ fontFamily: FONT_PX, color: fg, textShadow: glow, letterSpacing: '0.06em' }}>{hh}:{mm}</div>
-                    <div className="relative mt-1.5 h-[2px] rounded-full" style={{ background: 'linear-gradient(90deg, transparent, var(--tg-hot) 30%, var(--tg-hot) 70%, transparent)' }}>
-                        <span className="absolute -top-[4.5px] right-[18%] text-[9px] leading-none" style={{ color: 'var(--tg-pink)' }}>✦</span>
+                    <div className="text-[24px] font-bold tabular-nums" style={{ fontFamily: FONT_PX, color: ink, textShadow: glow, letterSpacing: '0.06em' }}>{hh}:{mm}</div>
+                    <div className="relative mt-1.5 h-[2px] rounded-full" style={{ background: 'linear-gradient(90deg, transparent, var(--tg-macc) 30%, var(--tg-macc) 70%, transparent)' }}>
+                        <span className="absolute -top-[4.5px] right-[18%] text-[9px] leading-none" style={{ color: 'var(--tg-macc-soft)' }}>✦</span>
                     </div>
                 </button>
             </div>
@@ -899,7 +914,7 @@ const TamagotchiHome: React.FC = () => {
     // 看板排版层文字色（有自定义图时生效，默认白）：原生取色器，选完即存
     const boardColorRef = useRef<HTMLInputElement>(null);
     const [boardFg, setBoardFg] = useState<string>(() => {
-        try { return localStorage.getItem('tama_board_fg') || '#ffffff'; } catch { return '#ffffff'; }
+        try { return localStorage.getItem('tama_board_fg') || ''; } catch { return ''; }  // 空=自动（暗板白字/浅板深字）
     });
     const onBoardColor = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
         const v = e.target.value || '#ffffff';
@@ -1213,7 +1228,7 @@ const TamagotchiHome: React.FC = () => {
                                     <button onClick={() => boardColorRef.current?.click()} aria-label="看板文字颜色"
                                         className="w-[2.4rem] py-2 rounded-xl flex items-center justify-center active:scale-95 transition-transform"
                                         style={{ background: PAL.card, border: `1.5px solid ${PAL.frameSoft}` }}>
-                                        <span className="w-3.5 h-3.5 rounded-full" style={{ background: boardFg, boxShadow: '0 0 0 1.5px var(--tg-frame-a30)' }} />
+                                        <span className="w-3.5 h-3.5 rounded-full" style={{ background: boardFg || (style.dark ? '#ffffff' : 'var(--tg-grape)'), boxShadow: '0 0 0 1.5px var(--tg-frame-a30)' }} />
                                     </button>
                                     <button onClick={clearBoardImg} aria-label="恢复默认看板"
                                         className="w-[2.4rem] py-2 rounded-xl flex items-center justify-center active:scale-95 transition-transform"
@@ -1238,7 +1253,7 @@ const TamagotchiHome: React.FC = () => {
                     />
 
                     {/* 直播看板（一整张 banner：图/渐变底 + 营业中/电子时间排版层），下面挂日程牌和 ✦ 挂饰 */}
-                    <LiveBoard customImg={boardImg} fg={boardFg} avatar={char.avatar} night={night}
+                    <LiveBoard customImg={boardImg} fg={boardFg} avatar={char.avatar} night={night} dark={style.dark}
                         hh={hh} mm={mm} phase={clockPhaseOf(virtualTime.hours)}
                         onClock={() => openApp(AppID.Schedule)} />
                     <input type="file" ref={boardInputRef} className="hidden" accept="image/*" onChange={onBoardFile} />
