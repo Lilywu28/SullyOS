@@ -1123,7 +1123,7 @@ const TamagotchiHome: React.FC = () => {
                 @keyframes tama-heart { 0% { opacity: 0; transform: translate(-50%, 0) scale(0.5); } 25% { opacity: 1; } 100% { opacity: 0; transform: translate(calc(-50% + var(--dx, 0px)), -46px) scale(1.1); } }
             `}</style>
 
-            {/* ===== 报头（高级横幅，参考稿）：细线环头像 · 衬线名字 · Lv·时间 · 经验条 · 调色/聊天圆钮 ===== */}
+            {/* ===== 报头（高级横幅，参考稿）：细线环头像 · 衬线名字 · Lv·时间 · 经验条 · 调色/通话圆钮 ===== */}
             <div className="absolute top-0 inset-x-0 z-[40] px-3" style={{ paddingTop: 'calc(var(--safe-top, 0px) + 0.7rem)' }}>
                 {char ? (
                     <div className="relative flex items-center gap-3 rounded-[1.4rem] pl-2 pr-2.5 py-2"
@@ -1154,15 +1154,13 @@ const TamagotchiHome: React.FC = () => {
                             style={{ background: PAL.cardHi, border: `1.5px solid ${PAL.frameSoft}`, color: PAL.grape }}>
                             <span className="w-4 h-4">{ICON.palette}</span>
                         </button>
-                        {/* 聊天圆钮（带未读角标） */}
-                        <button onClick={openChat} aria-label="聊天"
+                        {/* 通话圆钮（聊天入口已经够多：dock/气泡卡/地板手机，这颗给打电话） */}
+                        <button onClick={() => openApp(AppID.Call)} aria-label="通话"
                             className="relative w-9 h-9 rounded-full flex items-center justify-center shrink-0 active:scale-90 transition-transform"
                             style={{ background: PAL.cardHi, border: `1.5px solid ${PAL.frame}`, color: PAL.grape }}>
-                            <div className="w-[17px] h-[17px]">{DOCK_GLYPHS.talk}</div>
-                            {charUnread > 0 && (
-                                <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-0.5 rounded-full flex items-center justify-center text-[8px] font-bold text-white"
-                                    style={{ background: PAL.hot, border: `1px solid ${PAL.cardHi}` }}>{charUnread > 99 ? '99' : charUnread}</span>
-                            )}
+                            <svg viewBox="0 0 24 24" className="w-[17px] h-[17px]" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.9a2 2 0 0 1-.5 2.1L8 10a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.9.6 2.9.7a2 2 0 0 1 1.7 2z" />
+                            </svg>
                         </button>
                     </div>
                 ) : (
