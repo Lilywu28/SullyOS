@@ -2015,6 +2015,8 @@ export interface CharacterProfile {
   description: string;
   systemPrompt: string;
   worldview?: string;
+  /** 角色分组：指向 CharacterGroup.id；空或指向已删分组 = 未分组。仅本地组织用，不随角色卡导出 */
+  groupId?: string;
   memories: MemoryFragment[];
   refinedMemories?: Record<string, string>;
   activeMemoryMonths?: string[];
@@ -2263,6 +2265,19 @@ export interface CharacterProfile {
   vrState?: VRWorldCharState;
 }
 
+/**
+ * 角色分组（神经链接里的"文件夹"）：纯组织用途，解决角色太多时选择列表过长的问题。
+ * 注意与下面的 GroupProfile（群聊）无关——角色通过 CharacterProfile.groupId 指向分组，
+ * 删除分组只会让组内角色回到「未分组」，不会删角色。
+ */
+export interface CharacterGroup {
+    id: string;
+    name: string;
+    /** 排序权重（暂未在 UI 暴露，缺省按 createdAt 先后） */
+    order?: number;
+    createdAt?: number;
+}
+
 export interface GroupProfile {
     id: string;
     name: string;
@@ -2276,7 +2291,7 @@ export interface GroupProfile {
     privateContextCap?: number;
 }
 
-export interface CharacterExportData extends Omit<CharacterProfile, 'id' | 'memories' | 'refinedMemories' | 'activeMemoryMonths' | 'impression'> {
+export interface CharacterExportData extends Omit<CharacterProfile, 'id' | 'memories' | 'refinedMemories' | 'activeMemoryMonths' | 'impression' | 'groupId'> {
     version: number;
     type: 'sully_character_card';
     embeddedTheme?: ChatTheme;
@@ -2916,7 +2931,8 @@ export interface FullBackupData {
     customIcons?: Record<string, string>;
     appearancePresets?: AppearancePreset[];
     characters?: CharacterProfile[];
-    groups?: GroupProfile[]; 
+    characterGroups?: CharacterGroup[];
+    groups?: GroupProfile[];
     messages?: Message[];
     customThemes?: ChatTheme[];
     savedEmojis?: Emoji[]; 

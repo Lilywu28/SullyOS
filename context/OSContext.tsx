@@ -1,6 +1,6 @@
 
 import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
-import { APIConfig, AppID, OSTheme, VirtualTime, CharacterProfile, ChatTheme, Toast, FullBackupData, UserProfile, ApiPreset, GroupProfile, SystemLog, Worldbook, NovelBook, SongSheet, Message, RealtimeConfig, AppearancePreset, CloudBackupConfig, CloudBackupFile } from '../types';
+import { APIConfig, AppID, OSTheme, VirtualTime, CharacterProfile, CharacterGroup, ChatTheme, Toast, FullBackupData, UserProfile, ApiPreset, GroupProfile, SystemLog, Worldbook, NovelBook, SongSheet, Message, RealtimeConfig, AppearancePreset, CloudBackupConfig, CloudBackupFile } from '../types';
 import { DB } from '../utils/db';
 import { extractImagesInPlace, deepCloneForExport } from '../utils/backupExport';
 import { isBlobRef, getBlobForRef, migrateDataUrlToRef, resolveBlobRefsDeep, BLOBREF_PREFIX } from '../utils/blobRef';
@@ -230,6 +230,12 @@ interface OSContextType {
   updateCharacter: (id: string, updates: Partial<CharacterProfile> | ((prev: CharacterProfile) => Partial<CharacterProfile>)) => void;
   deleteCharacter: (id: string) => void;
   setActiveCharacterId: (id: string) => void;
+
+  // 角色分组（神经链接"文件夹"，与群聊 groups 无关）
+  characterGroups: CharacterGroup[];
+  createCharacterGroup: (name: string) => Promise<CharacterGroup | null>;
+  renameCharacterGroup: (id: string, name: string) => Promise<void>;
+  deleteCharacterGroup: (id: string) => Promise<void>;
   
   // Worldbooks
   worldbooks: Worldbook[];
@@ -664,7 +670,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     }
   }, [activeCharacterId]);
   
-  const [groups, setGroups] = useState<GroupProfile[]>([]); 
+  const [groups, setGroups] = useState<GroupProfile[]>([]);
+  const [characterGroups, setCharacterGroups] = useState<CharacterGroup[]>([]);
   const [worldbooks, setWorldbooks] = useState<Worldbook[]>([]); 
   const [novels, setNovels] = useState<NovelBook[]>([]); // New
   const [songs, setSongs] = useState<SongSheet[]>([]);
@@ -1058,14 +1065,15 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
             }
         };
 
-        const [dbChars, dbThemes, dbUser, dbGroups, dbWorldbooks, dbNovels, dbSongs] = await Promise.all([
+        const [dbChars, dbThemes, dbUser, dbGroups, dbWorldbooks, dbNovels, dbSongs, dbCharGroups] = await Promise.all([
             settle(DB.getAllCharacters(), 'characters', [] as CharacterProfile[]),
             settle(DB.getThemes(), 'themes', [] as ChatTheme[]),
             settle(DB.getUserProfile(), 'userProfile', null as UserProfile | null),
             settle(DB.getGroups(), 'groups', [] as GroupProfile[]),
             settle(DB.getAllWorldbooks(), 'worldbooks', [] as Worldbook[]),
             settle(DB.getAllNovels(), 'novels', [] as NovelBook[]),
-            settle(DB.getAllSongs(), 'songs', [] as SongSheet[])
+            settle(DB.getAllSongs(), 'songs', [] as SongSheet[]),
+            settle(DB.getCharacterGroups(), 'characterGroups', [] as CharacterGroup[])
         ]);
 
         let finalChars = dbChars;
@@ -1145,6 +1153,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
         }
 
         setGroups(dbGroups);
+        setCharacterGroups(dbCharGroups);
         setWorldbooks(dbWorldbooks);
         setNovels(dbNovels);
         setSongs(dbSongs);
@@ -2244,7 +2253,41 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   };
   const updateCharacter = async (id: string, updates: Partial<CharacterProfile> | ((prev: CharacterProfile) => Partial<CharacterProfile>)) => { setCharacters(prev => { const updated = prev.map(c => c.id === id ? normalizeCharacterImpression({ ...c, ...(typeof updates === 'function' ? updates(c) : updates) }) : c); const target = updated.find(c => c.id === id); if (target) DB.saveCharacter(target); return updated; }); };
   const deleteCharacter = async (id: string) => { setCharacters(prev => { const remaining = prev.filter(c => c.id !== id); if (remaining.length > 0 && activeCharacterId === id) { setActiveCharacterId(remaining[0].id); } return remaining; }); await DB.deleteCharacter(id); };
-  
+
+  // 角色分组方法（神经链接"文件夹"）
+  const createCharacterGroup = async (name: string): Promise<CharacterGroup | null> => {
+      const trimmed = name.trim();
+      if (!trimmed) return null;
+      const newGroup: CharacterGroup = { id: `cgroup-${Date.now()}`, name: trimmed, createdAt: Date.now() };
+      await DB.saveCharacterGroup(newGroup);
+      setCharacterGroups(prev => [...prev, newGroup]);
+      return newGroup;
+  };
+
+  const renameCharacterGroup = async (id: string, name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      let target: CharacterGroup | undefined;
+      setCharacterGroups(prev => {
+          const updated = prev.map(g => g.id === id ? { ...g, name: trimmed } : g);
+          target = updated.find(g => g.id === id);
+          return updated;
+      });
+      if (target) await DB.saveCharacterGroup(target);
+  };
+
+  // 删分组 = 组内角色回落「未分组」+ 删分组定义本身，角色不受影响
+  const deleteCharacterGroup = async (id: string) => {
+      setCharacters(prev => prev.map(c => {
+          if (c.groupId !== id) return c;
+          const next = { ...c, groupId: undefined };
+          DB.saveCharacter(next);
+          return next;
+      }));
+      await DB.deleteCharacterGroup(id);
+      setCharacterGroups(prev => prev.filter(g => g.id !== id));
+  };
+
   // Group Methods
   const createGroup = async (name: string, members: string[]) => {
       const newGroup: GroupProfile = {
@@ -3680,6 +3723,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     updateCharacter,
     deleteCharacter,
     setActiveCharacterId,
+    characterGroups,
+    createCharacterGroup,
+    renameCharacterGroup,
+    deleteCharacterGroup,
     worldbooks,
     addWorldbook,
     updateWorldbook,

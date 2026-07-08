@@ -24,6 +24,7 @@ import { COMMON_TIMEZONES } from '../utils/timezone';
 import { toMountedWorldbook } from '../utils/worldbook';
 import { stripSensitiveCardFields } from '../utils/characterCard';
 import { confirmExportSafety } from '../utils/exportGuard';
+import { sortCharacterGroups, GROUP_FILTER_UNGROUPED } from '../components/character/CharacterGroupFilter';
 
 const CharacterCard: React.FC<{
     char: CharacterProfile;
@@ -60,9 +61,27 @@ const CharacterCard: React.FC<{
 );
 
 const Character: React.FC = () => {
-  const { closeApp, openApp, characters, activeCharacterId, setActiveCharacterId, addCharacter, updateCharacter, deleteCharacter, apiConfig, addToast, userProfile, worldbooks, addWorldbook } = useOS();
+  const { closeApp, openApp, characters, activeCharacterId, setActiveCharacterId, addCharacter, updateCharacter, deleteCharacter, characterGroups, createCharacterGroup, renameCharacterGroup, deleteCharacterGroup, apiConfig, addToast, userProfile, worldbooks, addWorldbook } = useOS();
   const [view, setView] = useState<'list' | 'detail'>('list');
-  const [charPage, setCharPage] = useState(0); // 角色列表分页（每页 6 个）
+  const [charPage, setCharPage] = useState(0); // 角色列表分页（每页 6 个，仅未建分组时）
+  // 分组展开状态：存"已展开"的分组 id（未记录 = 收起）。跨会话记住，key 见下
+  const [expandedGroups, setExpandedGroups] = useState<string[]>(() => {
+      try {
+          const raw = localStorage.getItem('os_char_groups_expanded');
+          if (raw) {
+              const arr = JSON.parse(raw);
+              if (Array.isArray(arr)) return arr;
+          }
+      } catch {}
+      return [GROUP_FILTER_UNGROUPED]; // 首次进入只展开「未分组」，命名分组默认收起
+  });
+  const toggleGroupExpanded = (id: string) => {
+      setExpandedGroups(prev => {
+          const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+          try { localStorage.setItem('os_char_groups_expanded', JSON.stringify(next)); } catch {}
+          return next;
+      });
+  };
   const [detailTab, setDetailTab] = useState<'identity' | 'memory' | 'impression' | 'plates'>('identity');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<CharacterProfile | null>(null);
@@ -90,6 +109,10 @@ const Character: React.FC = () => {
   const [showBatchModal, setShowBatchModal] = useState(false); 
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<string | null>(null);
   const [showWorldbookModal, setShowWorldbookModal] = useState(false); // New Modal
+  const [showGroupModal, setShowGroupModal] = useState(false); // 角色分组管理
+  const [newGroupName, setNewGroupName] = useState('');
+  // 编辑页「新建分组并指派」的内联输入
+  const [detailGroupDraft, setDetailGroupDraft] = useState<string | null>(null);
 
   const [importText, setImportText] = useState('');
   const [exportText, setExportText] = useState('');
@@ -230,6 +253,17 @@ const Character: React.FC = () => {
           setView('list');
           setEditingId(null);
       } else closeApp();
+  };
+
+  const handleAddGroup = async () => {
+      const name = newGroupName.trim();
+      if (!name) return;
+      if (characterGroups.some(g => g.name === name)) {
+          addToast('已有同名分组', 'error');
+          return;
+      }
+      await createCharacterGroup(name);
+      setNewGroupName('');
   };
 
   const handleChange = (field: keyof CharacterProfile, value: any) => {
@@ -970,6 +1004,11 @@ ${isInitialGeneration ? `
                <div className="px-6 pb-4 shrink-0 flex items-center justify-between" style={{ paddingTop: 'max(4rem, var(--safe-top))' }}>
                    <div><h1 className="text-2xl font-light text-slate-800 tracking-tight">神经链接</h1><p className="text-xs text-slate-400 mt-1">已建立 {characters.length} 个角色连接</p></div>
                    <div className="flex gap-2">
+                        <button onClick={() => setShowGroupModal(true)} className="p-2 rounded-full bg-white/40 hover:bg-white/80 transition-colors text-slate-600" title="角色分组管理">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" />
+                            </svg>
+                        </button>
                         <button onClick={() => cardImportRef.current?.click()} className="p-2 rounded-full bg-white/40 hover:bg-white/80 transition-colors text-slate-600" title="导入角色卡">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
@@ -982,6 +1021,63 @@ ${isInitialGeneration ? `
                </div>
                <div className="flex-1 overflow-y-auto px-5 pb-20 no-scrollbar flex flex-col gap-3">
                    {(() => {
+                       // 建过分组 → 按组折叠展开（不再分页，分组本身就把列表变短了）；
+                       // 没建过分组 → 维持原来的分页列表，零变化。
+                       if (characterGroups.length > 0) {
+                           const knownGroupIds = new Set(characterGroups.map(g => g.id));
+                           const sections = [
+                               ...sortCharacterGroups(characterGroups).map(g => ({
+                                   id: g.id,
+                                   name: g.name,
+                                   chars: characters.filter(c => c.groupId === g.id),
+                               })),
+                               {
+                                   id: GROUP_FILTER_UNGROUPED,
+                                   name: '未分组',
+                                   // groupId 指向已删分组的角色也归到未分组，不会凭空消失
+                                   chars: characters.filter(c => !c.groupId || !knownGroupIds.has(c.groupId)),
+                               },
+                           ].filter(s => s.id !== GROUP_FILTER_UNGROUPED || s.chars.length > 0);
+                           return (
+                               <>
+                                   {sections.map(section => {
+                                       const expanded = expandedGroups.includes(section.id);
+                                       return (
+                                           <div key={section.id} className="shrink-0">
+                                               <button onClick={() => toggleGroupExpanded(section.id)} className="w-full flex items-center gap-2 px-2 py-1.5 text-slate-500 hover:text-slate-700 transition-colors">
+                                                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`}>
+                                                       <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                                                   </svg>
+                                                   <span className="text-sm font-medium">{section.name}</span>
+                                                   <span className="text-xs text-slate-400 tabular-nums">{section.chars.length}</span>
+                                               </button>
+                                               {expanded && (
+                                                   <div className="flex flex-col gap-3 mt-1">
+                                                       {section.chars.map(char => (
+                                                           <CharacterCard
+                                                               key={char.id}
+                                                               char={char}
+                                                               onClick={() => { setEditingId(char.id); setView('detail'); }}
+                                                               onDelete={(e) => {
+                                                                   e.stopPropagation();
+                                                                   setDeleteConfirmTarget(char.id);
+                                                               }}
+                                                           />
+                                                       ))}
+                                                       {section.chars.length === 0 && (
+                                                           <div className="text-xs text-slate-300 px-2 pb-1">空分组——在角色「设定」页里指派</div>
+                                                       )}
+                                                   </div>
+                                               )}
+                                           </div>
+                                       );
+                                   })}
+                                   <button onClick={addCharacter} className="w-full py-4 rounded-3xl border border-dashed border-slate-300 text-slate-400 text-sm hover:bg-white/30 transition-all flex items-center justify-center gap-2 shrink-0">
+                                       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>新建链接
+                                   </button>
+                               </>
+                           );
+                       }
                        const PAGE_SIZE = 6;
                        const totalPages = Math.max(1, Math.ceil(characters.length / PAGE_SIZE));
                        const page = Math.min(charPage, totalPages - 1);
@@ -1089,6 +1185,43 @@ ${isInitialGeneration ? `
                                </div>
                            </div>
                            
+                           <div>
+                               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">分组</label>
+                               <div className="flex gap-2 items-center">
+                                   <select
+                                       value={formData.groupId && characterGroups.some(g => g.id === formData.groupId) ? formData.groupId : ''}
+                                       onChange={e => handleChange('groupId', e.target.value || undefined)}
+                                       className="flex-1 bg-white rounded-2xl px-4 py-2.5 text-sm text-slate-700 shadow-sm focus:ring-1 focus:ring-primary/20 outline-none appearance-none"
+                                   >
+                                       <option value="">未分组</option>
+                                       {sortCharacterGroups(characterGroups).map(g => (
+                                           <option key={g.id} value={g.id}>{g.name}</option>
+                                       ))}
+                                   </select>
+                                   {detailGroupDraft === null ? (
+                                       <button onClick={() => setDetailGroupDraft('')} className="px-3 py-2.5 rounded-2xl bg-white text-xs text-slate-500 shadow-sm active:scale-95 transition-transform shrink-0">＋新建</button>
+                                   ) : (
+                                       <input
+                                           autoFocus
+                                           value={detailGroupDraft}
+                                           onChange={e => setDetailGroupDraft(e.target.value)}
+                                           onBlur={async () => {
+                                               const name = detailGroupDraft.trim();
+                                               setDetailGroupDraft(null);
+                                               if (!name) return;
+                                               const existing = characterGroups.find(g => g.name === name);
+                                               // 同名分组直接指派进去，不重复创建
+                                               const group = existing || await createCharacterGroup(name);
+                                               if (group) handleChange('groupId', group.id);
+                                           }}
+                                           onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                                           placeholder="分组名，回车确认"
+                                           className="w-36 px-3 py-2.5 rounded-2xl bg-white text-xs text-slate-700 shadow-sm outline-none focus:ring-1 focus:ring-primary/20 shrink-0"
+                                       />
+                                   )}
+                               </div>
+                           </div>
+
                            <div>
                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">核心指令 (System Prompt)</label>
                                <textarea value={formData.systemPrompt} onChange={(e) => handleChange('systemPrompt', e.target.value)} className="w-full h-40 bg-white rounded-3xl p-5 text-sm shadow-sm resize-none focus:ring-1 focus:ring-primary/20 transition-all vr-reader-scroll" placeholder="设定..." />
@@ -1552,9 +1685,49 @@ ${isInitialGeneration ? `
             </div>
         </Modal>
 
-        <Modal 
-            isOpen={!!deleteConfirmTarget} 
-            title="断开连接" 
+        {/* 角色分组管理 */}
+        <Modal isOpen={showGroupModal} title="角色分组管理" onClose={() => { setShowGroupModal(false); setNewGroupName(''); }}>
+            <div className="space-y-3">
+                <div className="flex gap-2">
+                    <input
+                        value={newGroupName}
+                        onChange={e => setNewGroupName(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleAddGroup(); }}
+                        placeholder="新分组名称"
+                        className="flex-1 px-4 py-2.5 bg-slate-100 rounded-xl text-sm text-slate-700 outline-none focus:ring-2 focus:ring-primary/20"
+                    />
+                    <button onClick={handleAddGroup} className="px-4 py-2.5 bg-primary text-white text-sm font-bold rounded-xl shadow-sm shadow-primary/30 active:scale-95 transition-transform shrink-0">添加</button>
+                </div>
+                {characterGroups.length === 0 ? (
+                    <div className="text-center text-xs text-slate-400 py-6">还没有分组。建一个试试——角色列表和各处选角色的地方都会按组展示。</div>
+                ) : (
+                    <div className="space-y-2 max-h-64 overflow-y-auto no-scrollbar">
+                        {sortCharacterGroups(characterGroups).map(g => (
+                            <div key={g.id} className="flex items-center gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                <input
+                                    defaultValue={g.name}
+                                    onBlur={e => { const v = e.target.value.trim(); if (v && v !== g.name) renameCharacterGroup(g.id, v); else e.target.value = g.name; }}
+                                    onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                                    className="flex-1 min-w-0 bg-transparent text-sm text-slate-700 outline-none border-b border-transparent focus:border-slate-300 py-0.5"
+                                />
+                                <span className="text-xs text-slate-400 tabular-nums shrink-0">{characters.filter(c => c.groupId === g.id).length} 个角色</span>
+                                <button
+                                    onClick={() => { deleteCharacterGroup(g.id); addToast(`分组「${g.name}」已删除，组内角色回到未分组`, 'info'); }}
+                                    className="p-1.5 rounded-full text-slate-300 hover:bg-red-50 hover:text-red-400 transition-all shrink-0"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+                <p className="text-[10px] text-slate-400 leading-relaxed bg-slate-50 p-2.5 rounded-xl">删除分组不会删除角色，组内角色会回到「未分组」。给角色指派分组：进入角色的「设定」页。</p>
+            </div>
+        </Modal>
+
+        <Modal
+            isOpen={!!deleteConfirmTarget}
+            title="断开连接"
             onClose={() => setDeleteConfirmTarget(null)} 
             footer={<div className="flex gap-2 w-full"><button onClick={() => setDeleteConfirmTarget(null)} className="flex-1 py-3 bg-slate-100 text-slate-500 rounded-2xl font-bold">保留</button><button onClick={confirmDeleteCharacter} className="flex-1 py-3 bg-red-500 text-white font-bold rounded-2xl shadow-lg shadow-red-200">确认断开</button></div>}
         >

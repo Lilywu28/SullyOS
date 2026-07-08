@@ -7,7 +7,7 @@ import {
     GalleryImage, FullBackupData, GroupProfile, SocialPost, StudyCourse, GameSession, Worldbook, NovelBook, Emoji, EmojiCategory,
     BankTransaction, SavingsGoal, BankFullState, DollhouseState, XhsStockImage, XhsActivityRecord, SongSheet, QuizSession, GuidebookSession,
     LifeSimState, HandbookEntry, Tracker, TrackerEntry, HotNewsSnapshot,
-    LifeRecord, MedPlan, LifeRecordSettings,
+    LifeRecord, MedPlan, LifeRecordSettings, CharacterGroup,
     VRWorldNovel, VRNovelAnnotation, CustomCreatorPart, VRMusicRoomState, VRGuestbookState, VRScript, VRStagedPlay, VRLetter,
     WorldProfile, WorldEpisode
 } from '../types';
@@ -19,9 +19,11 @@ import { exportWorldHomeLocal, importWorldHomeLocal } from './worldHome/localBac
 const DB_NAME = 'AetherOS_Data';
 // v67：两条并行线各自用掉了 v65/v66（A线: blob_assets + 生活记录；B线: room_plates 门牌 + digest_reports 消化日志），
 // 合并后统一推到 67——建表全部走幂等的 if(!contains)，任一侧的 v66 老库升级时都会补齐缺的那组表。
-const DB_VERSION = 67;
+// v68：character_groups 角色分组（神经链接"文件夹"，见 types.ts CharacterGroup）。
+const DB_VERSION = 68;
 
 const STORE_CHARACTERS = 'characters';
+const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
 const STORE_MESSAGES = 'messages';
 const STORE_EMOJIS = 'emojis';
 const STORE_EMOJI_CATEGORIES = 'emoji_categories'; 
@@ -205,6 +207,7 @@ export const openDB = (): Promise<IDBDatabase> => {
       };
 
       createStore(STORE_CHARACTERS, { keyPath: 'id' });
+      createStore(STORE_CHAR_GROUPS, { keyPath: 'id' }); // v68: 角色分组
 
       if (!db.objectStoreNames.contains(STORE_MESSAGES)) {
         const msgStore = db.createObjectStore(STORE_MESSAGES, { keyPath: 'id', autoIncrement: true });
@@ -517,6 +520,45 @@ export const DB = {
     const db = await openDB();
     const transaction = db.transaction(STORE_CHARACTERS, 'readwrite');
     transaction.objectStore(STORE_CHARACTERS).delete(id);
+  },
+
+  // ---- 角色分组（神经链接"文件夹"，与群聊 groups 无关）----
+
+  getCharacterGroups: async (): Promise<CharacterGroup[]> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      if (!db.objectStoreNames.contains(STORE_CHAR_GROUPS)) {
+        resolve([]);
+        return;
+      }
+      const transaction = db.transaction(STORE_CHAR_GROUPS, 'readonly');
+      const request = transaction.objectStore(STORE_CHAR_GROUPS).getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+  },
+
+  saveCharacterGroup: async (group: CharacterGroup): Promise<void> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_CHAR_GROUPS, 'readwrite');
+      transaction.objectStore(STORE_CHAR_GROUPS).put(group);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error || new Error('saveCharacterGroup aborted'));
+    });
+  },
+
+  // 只删分组定义。组内角色的 groupId 回落由 OSContext.deleteCharacterGroup 负责
+  // （角色 state 在 context 里，这里改了 DB 不改 state 会出现"删组后角色还挂在幽灵组里"）。
+  deleteCharacterGroup: async (id: string): Promise<void> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_CHAR_GROUPS, 'readwrite');
+      transaction.objectStore(STORE_CHAR_GROUPS).delete(id);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
   },
 
   /**
@@ -2433,8 +2475,9 @@ export const DB = {
           });
       };
 
-      const [characters, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, games, worldbooks, novels, bankTx, bankData, xhsActivities, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrScripts, vrStagedPlays, vrPresets, vrLetters, vrSettings, worlds, worldEpisodes, lifeRecords, medPlans, lifeRecordSettings] = await Promise.all([
+      const [characters, characterGroups, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, games, worldbooks, novels, bankTx, bankData, xhsActivities, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrScripts, vrStagedPlays, vrPresets, vrLetters, vrSettings, worlds, worldEpisodes, lifeRecords, medPlans, lifeRecordSettings] = await Promise.all([
           getAllFromStore(STORE_CHARACTERS),
+          getAllFromStore(STORE_CHAR_GROUPS),
           getAllFromStore(STORE_MESSAGES),
           getAllFromStore(STORE_THEMES),
           getAllFromStore(STORE_EMOJIS),
@@ -2494,7 +2537,7 @@ export const DB = {
       const dollhouseRecord = bankData.find((d: any) => d.id === 'dollhouse_state');
 
       return {
-          characters, messages, customThemes: themes, savedEmojis: emojis, emojiCategories, assets, galleryImages, userProfile, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, savedJournalStickers: journalStickers, socialPosts, courses, games, worldbooks, novels,
+          characters, characterGroups, messages, customThemes: themes, savedEmojis: emojis, emojiCategories, assets, galleryImages, userProfile, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, savedJournalStickers: journalStickers, socialPosts, courses, games, worldbooks, novels,
           bankState: mainState ? { ...mainState, id: undefined } : undefined,
           bankDollhouse: dollhouseRecord?.data || undefined,
           bankTransactions: bankTx,
@@ -2548,7 +2591,7 @@ export const DB = {
       const db = await openDB();
       
       const availableStores = [
-          STORE_CHARACTERS, STORE_MESSAGES, STORE_THEMES, STORE_EMOJIS, STORE_EMOJI_CATEGORIES,
+          STORE_CHARACTERS, STORE_CHAR_GROUPS, STORE_MESSAGES, STORE_THEMES, STORE_EMOJIS, STORE_EMOJI_CATEGORIES,
           STORE_ASSETS, STORE_GALLERY, STORE_USER, STORE_DIARIES,
           STORE_TASKS, STORE_ANNIVERSARIES, STORE_ROOM_TODOS, STORE_ROOM_NOTES,
           STORE_GROUPS, STORE_JOURNAL_STICKERS, STORE_SOCIAL_POSTS, STORE_COURSES, STORE_GAMES, STORE_WORLDBOOKS, STORE_NOVELS, STORE_SONGS,
@@ -2606,6 +2649,7 @@ export const DB = {
 
       const plannedSections = [
           data.characters !== undefined || data.mediaAssets !== undefined,
+          data.characterGroups !== undefined,
           data.messages !== undefined,
           data.customThemes !== undefined,
           data.savedEmojis !== undefined,
@@ -2811,6 +2855,11 @@ export const DB = {
           data.characters = undefined as any;
           data.mediaAssets = undefined as any;
       }, data.characters?.length || data.mediaAssets?.length || 0);
+
+      await runSection('角色分组', data.characterGroups !== undefined, async () => {
+          await mergeStore(STORE_CHAR_GROUPS, data.characterGroups, '角色分组', false);
+          data.characterGroups = undefined as any;
+      }, data.characterGroups?.length || 0);
 
       await runSection('聊天记录', data.messages !== undefined, async () => {
           if (!hasStore(STORE_MESSAGES)) return;
