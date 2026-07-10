@@ -890,6 +890,24 @@ export async function runCognitiveDigestion(
     // 执行动作：状态机改现有节点；概括类产出汇集为门牌蒸馏候选
     const { result, plateSubmissions } = await executeActions(actions, charId, material);
 
+    // 一次性评审：本轮送审过的书房/用户房/自我房候选**全部**打标退场——
+    // 被消费的在 executeActions 里已标，这里补上被判 keep 的：判过"该不该上门牌"
+    // 的记忆不再反复送审（keep = 看过了、不够格）。老积压因此每次消化自然消掉
+    // 一批（≤20/房），逐次清理。阁楼/窗台是状态机，必须反复出现直到有结局，不打标；
+    // 回看窗口按时间推进，天然不重复。
+    try {
+        const seenAt = Date.now();
+        const toMark = [...material.studyNodes, ...material.userRoomNodes, ...material.selfRoomNodes]
+            .filter(n => !n.digestedAt);
+        for (const n of toMark) {
+            n.digestedAt = seenAt;
+            await MemoryNodeDB.save(n);
+        }
+        if (toMark.length > 0) console.log(`🧠 [Digest] ${toMark.length} 条送审候选打标退场（含 keep）`);
+    } catch (e: any) {
+        console.warn(`🧠 [Digest] 候选打标失败（下轮会重新送审，无害）: ${e?.message || e}`);
+    }
+
     // 向量化本次新建的节点 + 任何历史遗留的孤儿节点
     if (embeddingConfig) await vectorizeOrphanedNodes(charId, embeddingConfig);
 
