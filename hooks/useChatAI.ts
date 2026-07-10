@@ -22,6 +22,8 @@ import { MCD_PROPOSE_TOOL, autoFixProposalCodesByName } from '../utils/mcdToolBr
 // 瑞幸: 与麦当劳同构, 只读 LuckinMiniApp 快照注入 + propose_cart_items UI 钩子工具
 import { LUCKIN_PROPOSE_TOOL, autoFixProposalCodesByName as autoFixLuckinProposalCodesByName, fetchOpenAIToolsForLuckin, inferCardKind as inferLuckinCardKind } from '../utils/luckinToolBridge';
 import { callLuckinTool } from '../utils/luckinMcpClient';
+import { callMcpTool } from '../utils/mcpClient';
+import { buildMcpOpenAITools } from '../utils/mcpToolBridge';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import {
     isInstantConfigReady,
@@ -811,7 +813,7 @@ export const useChatAI = ({
             // ⚠️ 工具模式(瑞幸点单/麦当劳)下绝不带 thinking/reasoning 参数: "thinking + tools" 同发
             //    Gemini 等会直接 400 INVALID_ARGUMENT —— 表现就是"开了思考链的角色一点单就报错,
             //    换个没开思考链的角色就好"。工具循环优先, 思考链这一轮让步。
-            const toolModeActive = payload.flags.luckinChatActive || payload.flags.mcdActive || payload.flags.luckinActive;
+            const toolModeActive = payload.flags.luckinChatActive || payload.flags.mcdActive || payload.flags.luckinActive || payload.flags.mcpChatActive;
             if (payload.flags.thinkingActive && !toolModeActive) {
                 const m: string = baseReqBody.model || '';
                 if (/^claude-/i.test(m) && !/-thinking$/i.test(m)) {
@@ -847,6 +849,17 @@ export const useChatAI = ({
                     baseReqBody.tool_choice = 'auto';
                 }
             }
+            // 通用 MCP: 用户自配服务器的已发现工具, 追加而不覆盖(可与瑞幸/麦当劳共存)。
+            // 工具清单读的是设置里持久化的发现结果, 不发网络请求。
+            let mcpToolResolve: ReturnType<typeof buildMcpOpenAITools>['resolve'] | null = null;
+            if (payload.flags.mcpChatActive) {
+                const { tools: mcpTools, resolve } = buildMcpOpenAITools();
+                if (mcpTools.length) {
+                    mcpToolResolve = resolve;
+                    baseReqBody.tools = [...(baseReqBody.tools || []), ...mcpTools];
+                    if (!baseReqBody.tool_choice) baseReqBody.tool_choice = 'auto';
+                }
+            }
 
             // ─── Instant Push 分支 ───
             // 与本地 fetch 对称：sendInstantPushAndAwaitReply 内部完成 sub 获取 / push 监听 /
@@ -856,7 +869,7 @@ export const useChatAI = ({
             // 瑞幸聊天点单 / 麦当劳 / 瑞幸小程序 这些"客户端工具循环"模式必须走本地 fetch:
             // instant push 会把请求交给 worker 并在这里提前 return, 工具循环(callLuckinTool 等)根本跑不到,
             // 表现就是"选了城市也没用 / 角色不下单"。这些模式下跳过 instant push, 用本地 fetch 跑工具循环。
-            if (isInstantConfigReady() && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive) {
+            if (isInstantConfigReady() && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive && !payload.flags.mcpChatActive) {
                 const instantResult = await sendInstantPushAndAwaitReply({
                     contactName: char.name,
                     messages: fullMessages as InstantPushPayload['messages'],
@@ -1106,10 +1119,13 @@ export const useChatAI = ({
                 }
             }
 
-            // 3.6 瑞幸聊天点单: 角色直接调真实 8 工具 (queryShopList → searchProductForMcp →
-            //     switchProduct → previewOrder)。结果落 luckin_card; previewOrder 落"结账卡"(可改量+扫码付);
-            //     createOrder 被拦截 —— 下单付款必须用户在结账卡上点。
-            if (payload.flags.luckinChatActive && data.choices?.[0]?.message?.tool_calls?.length) {
+            // 3.6 客户端工具循环 —— 两类共用一个循环骨架:
+            //     · 瑞幸聊天点单: 真实 8 工具 (queryShopList → searchProductForMcp →
+            //       switchProduct → previewOrder)。结果落 luckin_card; previewOrder 落"结账卡"(可改量+扫码付);
+            //       createOrder 被拦截 —— 下单付款必须用户在结账卡上点。
+            //     · 通用 MCP: 工具名命中 mcpToolResolve 映射就分发给对应服务器 (utils/mcpClient),
+            //       结果只回填循环不落卡片。两类工具可同时在场, 按名字各走各的。
+            if ((payload.flags.luckinChatActive || mcpToolResolve) && data.choices?.[0]?.message?.tool_calls?.length) {
                 const MAX_LOOPS = 6;
                 let loopMessages = [...fullMessages];
                 const loc = luckinChatRef?.current;
@@ -1130,6 +1146,23 @@ export const useChatAI = ({
                             args = typeof raw === 'string' ? (raw ? JSON.parse(raw) : {}) : (raw || {});
                         } catch (e) {
                             console.warn('☕ [Luckin-Chat] 工具参数解析失败:', e);
+                        }
+                        // 通用 MCP 工具: 命中映射直接分发, 不走下面的瑞幸逻辑
+                        const mcpHit = mcpToolResolve?.get(fname);
+                        if (mcpHit) {
+                            let mcpResult: any;
+                            try { mcpResult = await callMcpTool(mcpHit.server, mcpHit.toolName, args); }
+                            catch (e: any) { mcpResult = { success: false, error: e?.message || String(e) }; }
+                            const mcpMsg = mcpResult.success
+                                ? `工具 ${fname} 成功。结果(截断): ${(() => { try { return JSON.stringify(mcpResult.data).slice(0, 1500); } catch { return String(mcpResult.data).slice(0, 800); } })()}`
+                                : `工具 ${fname} 失败: ${mcpResult.error}`;
+                            loopMessages.push({ role: 'tool', tool_call_id: tc.id, content: mcpMsg } as any);
+                            continue;
+                        }
+                        // 只开了 MCP 没开瑞幸时, 幻觉出的未知工具名直接回错误让模型自我纠正
+                        if (!payload.flags.luckinChatActive) {
+                            loopMessages.push({ role: 'tool', tool_call_id: tc.id, content: `未知工具 ${fname}, 只能使用系统提供的工具。` } as any);
+                            continue;
                         }
                         // 经纬度兜底: 角色漏传就用激活时抓到的定位补上
                         if (/queryShopList|createOrder/i.test(fname) && loc) {
@@ -1180,7 +1213,7 @@ export const useChatAI = ({
                         method: 'POST', headers,
                         body: JSON.stringify(followBody)
                     });
-                    updateTokenUsage(data, historyMsgCount, `luckin-chat-${it + 1}`);
+                    updateTokenUsage(data, historyMsgCount, `${payload.flags.luckinChatActive ? 'luckin-chat' : 'mcp-chat'}-${it + 1}`);
                 }
             }
 

@@ -15,7 +15,8 @@ import { getProxyWorkerUrl, setProxyWorkerUrl, DEFAULT_PROXY_WORKER } from '../u
 import { VOICE_ACTING_GUIDE } from '../utils/minimaxTts';
 import { FISH_VOICE_ACTING_GUIDE } from '../utils/fishAudioTts';
 import { DATE_VOICE_GUIDE } from '../utils/datePrompts';
-import { Sun, Newspaper, NotePencil, Notebook, Book, ForkKnife, Coffee } from '@phosphor-icons/react';
+import { Sun, Newspaper, NotePencil, Notebook, Book, ForkKnife, Coffee, PlugsConnected } from '@phosphor-icons/react';
+import { loadMcpServers, saveMcpServers, createMcpServer, testMcpConnection, resetMcpSession, type McpServerConfig } from '../utils/mcpClient';
 import { loadPushConfig, savePushConfig, registerScheduleOnWorker, startHeartbeat, stopHeartbeat, isPushConfigAvailable, ensureSubscribed, sendTestPush, getPushDiagnostics, resetSubscription, deepResetSubscription, type PushDiagnostics } from '../utils/proactivePushConfig';
 import { ProactiveChat } from '../utils/proactiveChat';
 import { InstantPushSettingsModal } from '../components/settings/InstantPushSettingsModal';
@@ -59,6 +60,141 @@ const DiagRow: React.FC<{ label: string; value: string; bad?: boolean }> = ({ la
         <span className={`text-right ${bad ? 'text-rose-600 font-medium' : 'text-slate-700'}`}>{value}</span>
     </div>
 );
+
+/**
+ * 通用 MCP 工具服务器管理卡片（对标麦当劳/瑞幸卡片的样式，但服务器是用户自配的列表）。
+ * 配置存 localStorage（utils/mcpClient），启用且发现过工具的服务器会在聊天里
+ * 以 function-calling 注入，详见 docs/mcp-client.md。
+ */
+const McpServersCard: React.FC<{ addToast: (msg: string, type?: any) => void }> = ({ addToast }) => {
+    const [servers, setServers] = useState<McpServerConfig[]>(() => loadMcpServers());
+    const [expandedId, setExpandedId] = useState<string | null>(null);
+    const [testingId, setTestingId] = useState<string | null>(null);
+    const [testStatus, setTestStatus] = useState<Record<string, string>>({});
+
+    const persist = (next: McpServerConfig[]) => {
+        setServers(next);
+        saveMcpServers(next);
+    };
+
+    const update = (id: string, patch: Partial<McpServerConfig>) => {
+        persist(servers.map(s => s.id === id ? { ...s, ...patch, updatedAt: Date.now() } : s));
+        // URL / token / 代理变了，旧 session 不能再用
+        if (patch.url !== undefined || patch.token !== undefined || patch.proxyUrl !== undefined || patch.proxyKey !== undefined) {
+            resetMcpSession(id);
+        }
+    };
+
+    const addServer = () => {
+        const s = createMcpServer(`MCP 服务器 ${servers.length + 1}`, '');
+        persist([...servers, s]);
+        setExpandedId(s.id);
+    };
+
+    const removeServer = (id: string) => {
+        resetMcpSession(id);
+        persist(servers.filter(s => s.id !== id));
+    };
+
+    const discover = async (server: McpServerConfig) => {
+        if (!server.url.trim()) { addToast('请先填写服务器 URL', 'error'); return; }
+        setTestingId(server.id);
+        setTestStatus(prev => ({ ...prev, [server.id]: '' }));
+        try {
+            const r = await testMcpConnection(server);
+            setTestStatus(prev => ({ ...prev, [server.id]: r.ok ? `✅ ${r.message}` : `❌ ${r.message}` }));
+            if (r.ok && r.tools) {
+                update(server.id, { tools: r.tools });
+            }
+        } finally {
+            setTestingId(null);
+        }
+    };
+
+    return (
+        <div className="bg-violet-50/60 p-4 rounded-2xl space-y-3">
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                    <PlugsConnected size={20} weight="fill" className="text-violet-600" />
+                    <span className="text-sm font-bold text-violet-700">MCP 工具服务器</span>
+                    <span className="text-[9px] bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full">通用</span>
+                </div>
+                <button onClick={addServer} className="text-[11px] font-bold text-violet-600 bg-violet-100 px-2.5 py-1 rounded-lg active:scale-95 transition-transform">+ 添加</button>
+            </div>
+            <p className="text-[10px] text-violet-700/70 leading-relaxed">
+                接入任意标准 MCP 服务器（Streamable HTTP）：填 URL → 测试连接 → 打开开关，角色就能在聊天里调用这些工具。
+                被浏览器 CORS 拦住时配「代理 URL」：本地跑 <code className="bg-violet-100/80 px-1 rounded">node scripts/mcp-proxy.mjs</code>，或把 <code className="bg-violet-100/80 px-1 rounded">worker/mcp-proxy</code> 部署到你自己的 Cloudflare 账号。配置只存本机，详见 docs/mcp-client.md。
+            </p>
+            {servers.map(server => (
+                <div key={server.id} className="bg-white/70 border border-violet-100 rounded-xl p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                        <button className="flex-1 text-left min-w-0" onClick={() => setExpandedId(expandedId === server.id ? null : server.id)}>
+                            <div className="text-xs font-bold text-slate-700 truncate">{server.name || '(未命名)'}</div>
+                            <div className="text-[10px] text-slate-400 truncate">
+                                {server.url || '未填 URL'}{server.tools?.length ? ` · ${server.tools.length} 个工具` : ' · 未获取工具'}
+                            </div>
+                        </button>
+                        <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                            <input type="checkbox" checked={server.enabled} onChange={e => {
+                                if (e.target.checked && !(server.tools?.length)) {
+                                    addToast('先点「测试连接」拿到工具清单再启用', 'error');
+                                    return;
+                                }
+                                update(server.id, { enabled: e.target.checked });
+                            }} className="sr-only peer" />
+                            <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-500"></div>
+                        </label>
+                    </div>
+                    {expandedId === server.id && (
+                        <div className="space-y-2 pt-1">
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">名称</label>
+                                <input type="text" value={server.name} onChange={e => update(server.id, { name: e.target.value })} className="w-full bg-white/80 border border-violet-200 rounded-xl px-3 py-2 text-sm" placeholder="例如：Notion" />
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">服务器 URL</label>
+                                <input type="text" value={server.url} onChange={e => update(server.id, { url: e.target.value.trim() })} className="w-full bg-white/80 border border-violet-200 rounded-xl px-3 py-2 text-sm font-mono" placeholder="https://mcp.example.com/mcp" />
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Bearer Token（可选）</label>
+                                <input type="password" value={server.token || ''} onChange={e => update(server.id, { token: e.target.value.trim() })} className="w-full bg-white/80 border border-violet-200 rounded-xl px-3 py-2 text-sm font-mono" placeholder="服务器要求鉴权时填" />
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">代理 URL（可选，留空 = 直连）</label>
+                                <input type="text" value={server.proxyUrl || ''} onChange={e => update(server.id, { proxyUrl: e.target.value.trim() })} className="w-full bg-white/80 border border-violet-200 rounded-xl px-3 py-2 text-sm font-mono" placeholder="http://localhost:18061 或你的 Worker 地址" />
+                            </div>
+                            {(server.proxyUrl || '').trim() && (
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">代理密钥（可选，自部署 Worker 的 PROXY_KEY）</label>
+                                    <input type="password" value={server.proxyKey || ''} onChange={e => update(server.id, { proxyKey: e.target.value.trim() })} className="w-full bg-white/80 border border-violet-200 rounded-xl px-3 py-2 text-sm font-mono" placeholder="没设就留空" />
+                                </div>
+                            )}
+                            <div className="flex gap-2">
+                                <button onClick={() => discover(server)} disabled={testingId === server.id} className="flex-1 py-2 bg-violet-100 text-violet-700 text-xs font-bold rounded-xl active:scale-95 transition-transform disabled:opacity-60">
+                                    {testingId === server.id ? '测试中…' : '测试连接'}
+                                </button>
+                                <button onClick={() => removeServer(server.id)} className="px-4 py-2 bg-red-50 text-red-500 text-xs font-bold rounded-xl active:scale-95 transition-transform">删除</button>
+                            </div>
+                            {testStatus[server.id] && (
+                                <div className={`p-2 rounded-lg text-[11px] whitespace-pre-line leading-relaxed ${testStatus[server.id].startsWith('✅') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'}`}>
+                                    {testStatus[server.id]}
+                                </div>
+                            )}
+                            {!!server.tools?.length && (
+                                <p className="text-[10px] text-slate-400 leading-relaxed">
+                                    工具：{server.tools.map(t => t.name).join('、')}
+                                </p>
+                            )}
+                        </div>
+                    )}
+                </div>
+            ))}
+            <p className="text-[10px] text-violet-700/60 leading-relaxed bg-violet-100/40 rounded-lg px-2 py-1.5">
+                ⚠️ 开启 MCP 工具后聊天会走本地请求（跳过 Instant Push），且本轮思考链会让位给工具调用；涉及真实副作用的工具（发布/下单/删除）角色会先跟你确认。Token 与配置<b>只存本机、不上传</b>；走代理时请求会经过你自己配置的代理。
+            </p>
+        </div>
+    );
+};
 
 const Settings: React.FC = () => {
   const {
@@ -2788,6 +2924,9 @@ const Settings: React.FC = () => {
                       </div>
                   )}
               </div>
+
+              {/* 通用 MCP 工具服务器 */}
+              <McpServersCard addToast={addToast} />
 
               {/* 测试状态 */}
               {rtTestStatus && (
