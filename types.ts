@@ -2984,6 +2984,10 @@ export interface GameSession {
     // 皮下吐槽：默认关闭。开启后主线回合结束会额外单独调一次 LLM 生成场外吐槽，写进 oocLogs，
     // 完全不进主线 prompt/context，用于死亡/旁观角色也能继续参与吐槽游戏走向。
     oocEnabled?: boolean;
+    // 聊天室生成模式：'individual'（默认，逐角色独立调用 LLM，互不看到对方细节，防串记忆）
+    // | 'batch'（一次性调用生成所有人发言，速度快省调用次数，但角色间记忆隔离弱一些，靠 prompt 限定语约束）。
+    // 旧存档无此字段按 'individual' 处理。
+    oocCallMode?: 'individual' | 'batch';
     oocLogs?: Array<{
         id: string;
         charId: string;       // '__player__' 或角色 id；死亡/昏迷角色也可以发

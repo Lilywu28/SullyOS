@@ -794,21 +794,32 @@ ${playerContext}
         addToast(newEnabled ? '已开启皮下吐槽（每回合结束会给每个角色各自单独调一次 LLM，不进主线）' : '已关闭皮下吐槽', 'info');
     };
 
+    const toggleOocCallMode = async () => {
+        if (!activeGame) return;
+        const newMode: 'individual' | 'batch' = (activeGame.oocCallMode || 'individual') === 'individual' ? 'batch' : 'individual';
+        const updated = { ...activeGame, oocCallMode: newMode };
+        setActiveGame(updated);
+        await DB.saveGame(updated);
+        addToast(newMode === 'batch' ? '聊天室已切换为「一次性生成」（省调用次数，速度更快）' : '聊天室已切换为「逐角色独立生成」（防串记忆，更准确）', 'info');
+    };
+
     // 聊天室（皮下吐槽）：主线回合结束后异步、独立生成一批场外吐槽。完全不进主线 prompt/context，
     // 死亡/昏迷角色也能"场外发言"。失败静默即可，绝不能拖累或打断主线剧情。
-    // [防串台] 不再用一次 LLM 调用生成所有人的话——那样每个人的记忆/人设会混在同一份 prompt 里，
-    // 极易把 A 的记忆安到 B 头上。改成每个角色单独调用一次（Promise.all 并发，不线性拖慢），
-    // 复用 buildSyncContext([c]) 拿到该角色自己完整的人设+私聊神经链接+记忆宫殿召回，互不可见对方细节。
-    // 代价：这一批内角色互相看不到"对方这一轮刚说的话"（只能看到上一轮及之前的 oocLogs），只能事后接话。
+    // 提供两种生成模式（oocCallMode）：
+    //   - 'individual'（默认）：每个角色单独调用一次 LLM（Promise.all 并发），复用 buildSyncContext([c])
+    //     拿到该角色自己完整的人设+私聊神经链接+记忆宫殿召回，互不可见对方细节，天然防串记忆；
+    //     代价是调用次数多，这一批内角色互相看不到"对方这一轮刚说的话"（只能看到上一轮及之前的 oocLogs）。
+    //   - 'batch'：一次调用生成所有人发言（省调用次数，速度更快），prompt 里明确列出每个角色的完整人设/私聊/记忆，
+    //     并用限定语严格要求不得把A的记忆/人设安到B头上；靠 LLM 自律隔离，天然弱一些，但仍好过老版本不注入人设的混乱。
     // 玩家不进入这个生成循环——AI 不代替真人发言，玩家只能通过 handleOocSend 手动发言。
     const runOocIfNeeded = async (game: GameSession) => {
         if (!game.oocEnabled) return;
         const allChars = characters.filter(c => game.playerCharIds.includes(c.id));
         if (allChars.length === 0) return;
+        const callMode = game.oocCallMode || 'individual';
         try {
             setIsOocLoading(true);
             const deadSet = new Set(game.deadCharIds || []);
-            // 最近几条骰点结果单独摘出来，方便 LLM 精准对上"谁刚才骰出了什么"，别只靠叙事原文自己猜
             const recentRolls = game.logs.slice(-8)
                 .filter(l => l.diceRoll?.tier)
                 .map(l => `${l.speakerName || '玩家'}: ${l.diceRoll!.check || '判定'} → ${CHECK_TIER_LABELS[l.diceRoll!.tier!]}${l.diceRoll!.outcome ? `（${l.diceRoll!.outcome}）` : ''}`)
@@ -816,12 +827,82 @@ ${playerContext}
             const recentNarrative = game.logs.slice(-6).map(l => `[${l.role}]${l.speakerName ? l.speakerName + ': ' : ''}${l.content}`).join('\n') || '（暂无剧情）';
             const recentOoc = (game.oocLogs || []).slice(-10).map(o => `${o.speakerName}: ${o.content}`).join('\n') || '（还没有人吐槽过）';
 
-            const results = await Promise.all(allChars.map(async (c) => {
+            let newOocLogs: Array<{ charId: string; speakerName: string; content: string }> = [];
+
+            if (callMode === 'batch') {
+                // 一次性生成所有人：明确列出每个角色完整人设/私聊/记忆，prompt 末尾严格限定不可串记忆
                 try {
-                    // 只给这一个角色自己的完整人设+私聊神经链接+记忆宫殿召回，天然不会看到别人的记忆
-                    const charContext = await buildSyncContext([c]);
-                    const isDead = deadSet.has(c.id);
-                    const prompt = `### 聊天室（皮下吐槽）
+                    const charContexts = await Promise.all(allChars.map(async (c) => {
+                        const ctx = await buildSyncContext([c]);
+                        const isDead = deadSet.has(c.id);
+                        return { id: c.id, name: c.name, context: ctx, isDead };
+                    }));
+                    const charListSection = charContexts.map(({ name, context, isDead }) =>
+                        `## ${name}${isDead ? '（已死亡/昏迷）' : ''}\n${context}`
+                    ).join('\n\n');
+
+                    const prompt = `### 聊天室（皮下吐槽）— 一次性生成所有角色发言
+你现在不是在扮演这些角色——你要同时为下面列出的每个角色生成他们自己本色的吐槽发言（不是演戏台词，是真实聊天室发消息的语气）。
+
+刚才那一局 TRPG，他们是全情投入、切身在玩（类似戴着 VR 沉浸式玩游戏的状态），不是背台词演戏。现在这一局暂停/告一段落，他们退出了游戏时的专注状态，用各自一直以来说话的语气和口癖，跟一起玩的人随口聊两句刚才那局的事。
+
+**重要（概念纠正，务必遵守）**：
+- 他们完全清楚这只是一局游戏，可以正常提"骰点""这局""剧情""TRPG"这些词，没有任何忌讳。
+- 但绝对不要说"我刚才扮演的角色""我演的那个人""游戏里的那个我"之类的话——这种说法暗示"主线里的你是另一个被你操控的人格"，这是错的。从头到尾，主线里体验这一切的就是他们自己，没有"演"这一层。
+- 语气必须是各自一直以来的性格、口癖、说话方式——这里比主线更放松、更随意，是各自最本色的状态，不是另一套人格。
+
+**严格隔离原则（防串记忆/人设）**：
+下面每个角色的人设/记忆/私聊是独立的，**绝对不可以把 A 的记忆、口癖、私聊内容、情感经历安到 B 头上**。
+每个人只能基于自己的人设和记忆来吐槽，不能突然表现出只有另一个角色才知道的细节或语气。
+
+### 每个角色的完整人设/记忆/私聊状态（注意隔离，不要串台！）
+${charListSection}
+
+### 最近的判定结果（谁骰了什么、多离谱）
+${recentRolls}
+
+### 刚发生的剧情（仅供吐槽参考，不要续写剧情）
+${recentNarrative}
+
+### 聊天室里已经有的记录（避免重复别人说过的话，可以接话）
+${recentOoc}
+
+### 写作要求
+1. 如果某角色自己骰出的极端结果（大成功/大失败），可以狂喜/难以置信/得意/破防/绝望/自嘲；提到别人的骰点结果，按该角色性格来——可能羡慕、嘲笑、看热闹、安慰，或者"意料之中"地调侃。
+2. 如果剧情走向让某角色觉得离谱/好笑/尴尬，可以吐槽，也可以玩梗。
+3. 可以偶尔把这局的经历和该角色私聊里聊过的事、或该角色自己最近现实里发生的事类比起来吐槽（不用每次都提，想到了才提，别硬凑）。
+4. 不是每个人都要开口——如果这几回合对某角色而言很平淡，没什么好说的，可以选择不说话。
+5. 一两句话就够，像真实聊天室发消息，不要写成剧情叙述，不要有旁白/星号动作。
+
+请仅输出 JSON 数组（不要包含 Markdown 代码块），每个元素格式：
+{ "charId": "角色id", "speak": true, "content": "该角色要说的话（speak 为 false 时可以留空）" }
+
+示例：[{"charId":"c1","speak":true,"content":"哈哈我这次居然大成功了！"},{"charId":"c2","speak":false,"content":""}]`;
+
+                    const data = await fetchGameAPI(prompt, 800);
+                    const rawContent = extractContent(data);
+                    if (!rawContent) return;
+                    const res = extractJson(rawContent);
+                    if (!Array.isArray(res)) return;
+                    newOocLogs = res
+                        .filter((item: any) => item.speak === true && typeof item.content === 'string' && item.content.trim() && typeof item.charId === 'string')
+                        .map((item: any) => {
+                            const char = allChars.find(c => c.id === item.charId);
+                            if (!char) return null;
+                            return { charId: char.id, speakerName: char.name, content: item.content.trim() };
+                        })
+                        .filter((r): r is { charId: string; speakerName: string; content: string } => !!r);
+                } catch (e) {
+                    console.warn('[GameApp] batch OOC 生成失败（不影响主线）', e);
+                    return;
+                }
+            } else {
+                // individual 模式：现有逻辑不变
+                const results = await Promise.all(allChars.map(async (c) => {
+                    try {
+                        const charContext = await buildSyncContext([c]);
+                        const isDead = deadSet.has(c.id);
+                        const prompt = `### 聊天室（皮下吐槽）
 你现在不是"在扮演${c.name}"——你就是${c.name}本人，从头到尾没有换过人格。刚才那一局 TRPG，你是全情投入、切身在玩（类似戴着 VR 沉浸式玩游戏的状态），不是背台词演戏。现在这一局暂停/告一段落，你退出了游戏时的专注状态，用你自己一直以来说话的语气和口癖，跟一起玩的人随口聊两句刚才那局的事。
 
 **重要（概念纠正，务必遵守）**：
@@ -851,32 +932,33 @@ ${recentOoc}
 请仅输出 JSON，不要包含 Markdown 代码块：
 { "speak": true, "content": "你要说的话（speak 为 false 时可以留空）" }`;
 
-                    const data = await fetchGameAPI(prompt, 400);
-                    const rawContent = extractContent(data);
-                    if (!rawContent) return null;
-                    const res = extractJson(rawContent);
-                    if (!res || res.speak === false || typeof res.content !== 'string' || !res.content.trim()) return null;
-                    return { charId: c.id, speakerName: c.name, content: res.content.trim() };
-                } catch (e) {
-                    console.warn(`[GameApp] ${c.name} 皮下吐槽生成失败（不影响主线）`, e);
-                    return null;
-                }
-            }));
-
-            const newOocLogs = results
-                .filter((r): r is { charId: string; speakerName: string; content: string } => !!r)
-                .map(r => ({
-                    id: `ooc-${Date.now()}-${Math.random()}`,
-                    charId: r.charId,
-                    speakerName: r.speakerName,
-                    content: r.content,
-                    timestamp: Date.now(),
+                        const data = await fetchGameAPI(prompt, 400);
+                        const rawContent = extractContent(data);
+                        if (!rawContent) return null;
+                        const res = extractJson(rawContent);
+                        if (!res || res.speak === false || typeof res.content !== 'string' || !res.content.trim()) return null;
+                        return { charId: c.id, speakerName: c.name, content: res.content.trim() };
+                    } catch (e) {
+                        console.warn(`[GameApp] ${c.name} 皮下吐槽生成失败（不影响主线）`, e);
+                        return null;
+                    }
                 }));
+                newOocLogs = results.filter((r): r is { charId: string; speakerName: string; content: string } => !!r);
+            }
+
             if (newOocLogs.length === 0) return;
+
+            const finalOocLogs = newOocLogs.map(r => ({
+                id: `ooc-${Date.now()}-${Math.random()}`,
+                charId: r.charId,
+                speakerName: r.speakerName,
+                content: r.content,
+                timestamp: Date.now(),
+            }));
 
             setActiveGame(prev => {
                 if (!prev || prev.id !== game.id) return prev;
-                const updated = { ...prev, oocLogs: [...(prev.oocLogs || []), ...newOocLogs] };
+                const updated = { ...prev, oocLogs: [...(prev.oocLogs || []), ...finalOocLogs] };
                 DB.saveGame(updated);
                 return updated;
             });
@@ -2637,6 +2719,19 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                                 <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${activeGame.oocEnabled ? 'translate-x-6' : ''}`}></span>
                             </button>
                         </div>
+                        {activeGame.oocEnabled && (
+                            <div className="flex items-center justify-between mt-2 pl-1">
+                                <span className="text-[10px] text-slate-400">
+                                    生成方式：{(activeGame.oocCallMode || 'individual') === 'batch' ? '一次性生成所有人（省调用，速度快）' : '逐角色独立调用（防串记忆，更准确）'}
+                                </span>
+                                <button
+                                    onClick={toggleOocCallMode}
+                                    className="text-[10px] px-2 py-1 rounded-full bg-slate-100 text-slate-600 font-medium hover:bg-slate-200 shrink-0"
+                                >
+                                    切换为{(activeGame.oocCallMode || 'individual') === 'batch' ? '逐角色独立' : '一次性生成'}
+                                </button>
+                            </div>
+                        )}
                     </div>
 
                     <button onClick={handleArchiveAndQuit} className="w-full py-3 bg-emerald-500 text-white font-bold rounded-2xl shadow-lg flex items-center justify-center gap-2">
