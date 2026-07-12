@@ -192,18 +192,30 @@ const GameMarkdown: React.FC<{ content: string, theme: any, customStyle?: { font
     );
 };
 
-// 五档检定结果的徽章配色：大成功/大失败突出显示，其余按成功度渐变
+// 五档检定结果的徽章配色：大成功/大失败突出显示，其余按成功度渐变。
+// 没有 tier（骰了但没被 AI 采纳为正式判定）统一用灰色淡化样式，跟"真的判定过"区分开，不能跟着套成功/失败的颜色。
 const DICE_TIER_BADGE_STYLE: Record<string, string> = {
     critical_success: 'bg-yellow-500/30 text-yellow-300',
     success: 'bg-emerald-500/20 text-emerald-400',
     partial: 'bg-white/20 text-yellow-500',
     failure: 'bg-orange-500/20 text-orange-400',
     critical_failure: 'bg-red-500/20 text-red-400',
+    unadopted: 'bg-white/10 text-white/40',
 };
 const diceTierBadgeClass = (diceRoll?: GameLog['diceRoll']): string => {
     if (!diceRoll) return '';
-    if (diceRoll.tier) return DICE_TIER_BADGE_STYLE[diceRoll.tier] || DICE_TIER_BADGE_STYLE.partial;
-    return diceRoll.success === false ? DICE_TIER_BADGE_STYLE.failure : DICE_TIER_BADGE_STYLE.partial;
+    if (diceRoll.tier) return DICE_TIER_BADGE_STYLE[diceRoll.tier];
+    return DICE_TIER_BADGE_STYLE.unadopted;
+};
+// 气泡下方的判定说明小字：判定过的显示"技能·五档标签：代价原因"，没被采纳的骰点显示提示语，
+// 没骰点/纯叙事的不显示（调用处已经用 log.diceRoll 判断了）。
+const diceOutcomeLine = (diceRoll?: GameLog['diceRoll']): string | null => {
+    if (!diceRoll) return null;
+    if (diceRoll.tier) {
+        const label = CHECK_TIER_LABELS[diceRoll.tier];
+        return `${diceRoll.check ? `${diceRoll.check}·` : ''}${label}${diceRoll.outcome ? `：${diceRoll.outcome}` : ''}`;
+    }
+    return '本回合骰了，但这次行动没有实际风险/冲突，未被采纳为正式判定';
 };
 
 const GameApp: React.FC = () => {
@@ -1199,7 +1211,11 @@ ${rollInstruction}
                                 speakerName: char.name,
                                 content: combinedContent,
                                 timestamp: Date.now(),
-                                diceRoll: (check && roll !== undefined) ? { result: roll, max: diceCfg.count * diceCfg.sides, check: check.skill, success: check.success, outcome: check.outcome, tier: check.tier } : undefined
+                                diceRoll: roll !== undefined
+                                    ? (check
+                                        ? { result: roll, max: diceCfg.count * diceCfg.sides, check: check.skill, success: check.success, outcome: check.outcome, tier: check.tier }
+                                        : { result: roll, max: diceCfg.count * diceCfg.sides })
+                                    : undefined
                             });
                         }
                     }
@@ -2377,14 +2393,17 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                                     <span className="text-[10px] font-bold opacity-60 mb-1 ml-1 flex items-center gap-1.5">
                                         {charInfo.name}
                                         {log.diceRoll && (
-                                            <span title={log.diceRoll.outcome} className={`px-1.5 rounded font-mono ${diceTierBadgeClass(log.diceRoll)}`}>
-                                                <DiceFive size={10} weight="fill" className="inline" /> {log.diceRoll.result}{log.diceRoll.check ? ` ${log.diceRoll.check}` : ''}
+                                            <span className={`px-1.5 rounded font-mono ${diceTierBadgeClass(log.diceRoll)}`}>
+                                                <DiceFive size={10} weight="fill" className="inline" /> {log.diceRoll.result}{log.diceRoll.check ? ` ${log.diceRoll.check}` : ''}{log.diceRoll.tier ? `·${CHECK_TIER_LABELS[log.diceRoll.tier]}` : '·未采纳'}
                                             </span>
                                         )}
                                     </span>
                                     <div className={`px-4 py-2 rounded-2xl rounded-tl-none text-sm ${theme.cardBg} border ${theme.border} shadow-sm relative`}>
                                         <GameMarkdown content={log.content} theme={theme} customStyle={uiSettings} />
                                     </div>
+                                    {diceOutcomeLine(log.diceRoll) && (
+                                        <span className="mt-1 ml-1 text-[10px] opacity-50">→ {diceOutcomeLine(log.diceRoll)}</span>
+                                    )}
                                     <button onClick={() => handleRollbackLog(i)} className="self-start mt-1 text-[9px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity hover:underline">回退</button>
                                 </div>
                             </div>
@@ -2396,14 +2415,17 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                                 <div className="flex items-center gap-2 mb-1">
                                     <span className={`text-[10px] font-bold opacity-60`}>{log.speakerName}</span>
                                     {log.diceRoll && (
-                                        <span title={log.diceRoll.outcome} className={`text-[10px] px-1.5 rounded font-mono ${diceTierBadgeClass(log.diceRoll)}`}>
-                                            <DiceFive size={12} weight="fill" className="inline" /> {log.diceRoll.result}{log.diceRoll.check ? ` ${log.diceRoll.check}` : ''}
+                                        <span className={`text-[10px] px-1.5 rounded font-mono ${diceTierBadgeClass(log.diceRoll)}`}>
+                                            <DiceFive size={12} weight="fill" className="inline" /> {log.diceRoll.result}{log.diceRoll.check ? ` ${log.diceRoll.check}` : ''}{log.diceRoll.tier ? `·${CHECK_TIER_LABELS[log.diceRoll.tier]}` : '·未采纳'}
                                         </span>
                                     )}
                                 </div>
                                 <div className={`px-4 py-2 rounded-2xl rounded-tr-none text-sm bg-orange-600 text-white shadow-md max-w-[85%]`}>
                                     {log.content}
                                 </div>
+                                {diceOutcomeLine(log.diceRoll) && (
+                                    <span className="mt-1 text-[10px] opacity-50">→ {diceOutcomeLine(log.diceRoll)}</span>
+                                )}
                                 <button onClick={() => handleRollbackLog(i)} className="mt-1 text-[9px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity hover:underline">回退</button>
                             </div>
                         );
