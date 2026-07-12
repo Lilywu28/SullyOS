@@ -2,13 +2,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
-import { GameSession, GameTheme, CharacterProfile, GameLog, GameActionOption, GameSummary } from '../types';
+import { GameSession, GameTheme, CharacterProfile, GameLog, GameActionOption, GameSummary, CharacterSheetEntry } from '../types';
 import { ContextBuilder } from '../utils/context';
 import { extractContent, extractJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
+import { RuleSystemId, DiceConfig, RULE_SYSTEMS, RULE_SYSTEM_LIST, DICE_PRESETS, DEFAULT_DICE_CONFIG, FREEFORM_BASIC_SKILLS, rollDice, rollFlavorFor, formatCharacterSheetsBlock, buildCharacterSheetPrompt, buildFreeformCharacterSheetPrompt, computeCheckTier, findSkillValueByName, CheckTier, CHECK_TIER_LABELS, getCharacterVitals, computeVitalState, computeSanState, VITAL_STATE_LABELS, SAN_STATE_LABELS, VitalState, SanState } from '../utils/trpgRuleSystems';
 import Modal from '../components/os/Modal';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
-import { Planet, RocketLaunch, Lightning, LockSimple, DiceFive, Toolbox, FloppyDisk, ArrowsClockwise, DoorOpen } from '@phosphor-icons/react';
+import { Planet, RocketLaunch, Lightning, LockSimple, DiceFive, Toolbox, FloppyDisk, ArrowsClockwise, DoorOpen, IdentificationCard, Eye, ChatCircleDots, SkullIcon } from '@phosphor-icons/react';
 
 // --- Themes Configuration (Enhanced) ---
 const GAME_THEMES: Record<GameTheme, { bg: string, text: string, accent: string, font: string, border: string, cardBg: string, gradient: string, optionNormal: string, optionChaotic: string, optionEvil: string }> = {
@@ -119,15 +120,11 @@ const parseWorldGen = (raw: string): { title: string; worldSetting: string } => 
     return { title: title.trim(), worldSetting: worldSetting.trim() };
 };
 
-// 投掷一颗 D20
-const rollD20 = () => Math.floor(Math.random() * 20) + 1;
-// 把骰点结果翻译成成功度描述，供 GM 判定
-const rollFlavor = (n: number) => {
-    if (n === 20) return '大成功(Critical Success)';
-    if (n === 1) return '大失败(Critical Failure)';
-    if (n >= 15) return '成功(Success)';
-    if (n >= 8) return '勉强(Partial)';
-    return '失败(Failure)';
+// 按存档解析当前生效的骰子机制：coc7/dnd5e 用固定机制，freeform 用存档自定义或默认 d20
+const resolveDiceConfig = (game: Pick<GameSession, 'ruleSystem' | 'diceConfig'>): DiceConfig => {
+    const sys = game.ruleSystem || 'freeform';
+    if (sys !== 'freeform') return RULE_SYSTEMS[sys].dice;
+    return game.diceConfig || DEFAULT_DICE_CONFIG;
 };
 
 // --- Markdown Renderer Component ---
@@ -195,6 +192,32 @@ const GameMarkdown: React.FC<{ content: string, theme: any, customStyle?: { font
     );
 };
 
+// 五档检定结果的徽章配色：大成功/大失败突出显示，其余按成功度渐变。
+// 没有 tier（骰了但没被 AI 采纳为正式判定）统一用灰色淡化样式，跟"真的判定过"区分开，不能跟着套成功/失败的颜色。
+const DICE_TIER_BADGE_STYLE: Record<string, string> = {
+    critical_success: 'bg-yellow-500/30 text-yellow-300',
+    success: 'bg-emerald-500/20 text-emerald-400',
+    partial: 'bg-white/20 text-yellow-500',
+    failure: 'bg-orange-500/20 text-orange-400',
+    critical_failure: 'bg-red-500/20 text-red-400',
+    unadopted: 'bg-white/10 text-white/40',
+};
+const diceTierBadgeClass = (diceRoll?: GameLog['diceRoll']): string => {
+    if (!diceRoll) return '';
+    if (diceRoll.tier) return DICE_TIER_BADGE_STYLE[diceRoll.tier];
+    return DICE_TIER_BADGE_STYLE.unadopted;
+};
+// 气泡下方的判定说明小字：判定过的显示"技能·五档标签：代价原因"，没被采纳的骰点显示提示语，
+// 没骰点/纯叙事的不显示（调用处已经用 log.diceRoll 判断了）。
+const diceOutcomeLine = (diceRoll?: GameLog['diceRoll']): string | null => {
+    if (!diceRoll) return null;
+    if (diceRoll.tier) {
+        const label = CHECK_TIER_LABELS[diceRoll.tier];
+        return `${diceRoll.check ? `${diceRoll.check}·` : ''}${label}${diceRoll.outcome ? `：${diceRoll.outcome}` : ''}`;
+    }
+    return '本回合骰了，但这次行动没有实际风险/冲突，未被采纳为正式判定';
+};
+
 const GameApp: React.FC = () => {
     const { closeApp, characters, userProfile, apiConfig, addToast, updateCharacter, characterGroups } = useOS();
     const [view, setView] = useState<'lobby' | 'create' | 'play'>('lobby');
@@ -217,6 +240,20 @@ const GameApp: React.FC = () => {
     const [newDiceDisabled, setNewDiceDisabled] = useState(false);            // 关闭骰子（默认每次直接成功）
     const [newArchiveMode, setNewArchiveMode] = useState<'auto' | 'manual'>('auto');
     const [showArchiveHelp, setShowArchiveHelp] = useState(false);            // 归档模式问号说明
+    const [showSheetsInMenu, setShowSheetsInMenu] = useState(false);          // 系统菜单里展开/收起角色数值表
+    const [showSheetModal, setShowSheetModal] = useState(false);             // 局内头部「数值表」入口（更显眼）
+    // 规则系统选择
+    const [newRuleSystem, setNewRuleSystem] = useState<RuleSystemId>('freeform');
+    const [newDiceConfig, setNewDiceConfig] = useState<DiceConfig>(DEFAULT_DICE_CONFIG); // 仅 freeform 下可自定义
+    const [showCustomDice, setShowCustomDice] = useState(false);
+    const [customDiceCount, setCustomDiceCount] = useState(1);
+    const [customDiceSides, setCustomDiceSides] = useState(20);
+    const [customDiceMode, setCustomDiceMode] = useState<'high-good' | 'low-good'>('high-good');
+    // 三种规则系统统一：按本场剧本单独生成的逐角色数值表（AI 生成 + 手动微调），key 为 charId / '__player__'
+    const [newCharacterSheets, setNewCharacterSheets] = useState<Record<string, CharacterSheetEntry>>({});
+    const [isGeneratingSheets, setIsGeneratingSheets] = useState(false);
+    // 自由叙事专属：AI 按本场世界观原创的特殊技能（基础技能固定通用，见 FREEFORM_BASIC_SKILLS）
+    const [newFreeformSpecialSkills, setNewFreeformSpecialSkills] = useState<Array<{ key: string; label: string }>>([]);
 
     // Play State
     const [userInput, setUserInput] = useState('');
@@ -247,6 +284,10 @@ const GameApp: React.FC = () => {
     const [isArchiving, setIsArchiving] = useState(false);
     const [showTools, setShowTools] = useState(false); // Default hidden
     const [showParty, setShowParty] = useState(true);  // Default visible
+    const [selectedStatusCharId, setSelectedStatusCharId] = useState<string>('__player__'); // Stats HUD 当前显示谁的状态，点头像切换
+    const [playSubView, setPlaySubView] = useState<'game' | 'chatroom'>('game'); // 局内全屏切换：剧情 vs 聊天室（皮下吐槽），不是弹窗
+    const [oocInput, setOocInput] = useState('');
+    const [isOocLoading, setIsOocLoading] = useState(false);
     const [uiSettings, setUiSettings] = useState<{fontSize: number, color: string}>({ fontSize: 14, color: '' });
 
     // SAN Lock: Sync from activeGame on load
@@ -456,6 +497,112 @@ ${worldIdea.trim() ? `**玩家的灵感/想法（请务必围绕它发挥）**: 
         }
     };
 
+    // --- AI 生成逐角色数值表（三种规则系统统一；方案B）---
+    // 按本场剧本单独生成：让 LLM 参考角色的性格设定+长期记忆分配数值，而非固定模板，
+    // 这样"设定上弱气的角色"力量数值自然会偏低，符合真实跑团里"角色卡贴人设"的体验。
+    // 自由叙事没有固定技能表，额外让 LLM 按世界观原创 3~5 个"特殊技能"（基础技能固定通用）。
+    const handleGenerateCharacterSheets = async () => {
+        if (!apiConfig.apiKey) {
+            addToast('请先配置 API Key', 'error');
+            return;
+        }
+        if (!newWorld.trim()) {
+            addToast('请先填写或生成世界观设定', 'error');
+            return;
+        }
+        if (selectedPlayers.size === 0) {
+            addToast('请先选择队友', 'error');
+            return;
+        }
+        setIsGeneratingSheets(true);
+        try {
+            const players = characters.filter(c => selectedPlayers.has(c.id));
+            const subjects = [
+                { id: '__player__', name: userProfile.name, profileText: `[玩家本人]\n${userProfile.bio || '无补充设定'}` },
+                ...players.map(p => ({
+                    id: p.id,
+                    name: p.name,
+                    profileText: ContextBuilder.buildRoleSettingsContext(p, { skipMemories: false }),
+                })),
+            ];
+            const bySubjectId = new Map(subjects.map(s => [s.id, s.name]));
+
+            if (newRuleSystem === 'freeform') {
+                const prompt = buildFreeformCharacterSheetPrompt(newWorld, subjects, newFreeformSpecialSkills);
+                const data = await fetchGameAPI(prompt, 4000);
+                const rawContent = extractContent(data);
+                if (!rawContent) throw new Error('AI 返回了空响应');
+                const res = extractJson(rawContent);
+                if (!res || !Array.isArray(res.sheets)) throw new Error('未能解析出数值表');
+
+                const specialSkills: Array<{ key: string; label: string }> = Array.isArray(res.specialSkills)
+                    ? res.specialSkills.filter((s: any) => s?.key && s?.label).slice(0, 5)
+                    : [];
+                const validSkillKeys = new Set([...FREEFORM_BASIC_SKILLS.map(s => s.key), ...specialSkills.map(s => s.key)]);
+                const nextSheets: Record<string, CharacterSheetEntry> = {};
+                for (const sheet of res.sheets) {
+                    const name = bySubjectId.get(sheet.id);
+                    if (!name) continue;
+                    const skills: Record<string, number> = {};
+                    for (const [k, v] of Object.entries(sheet.skills || {})) {
+                        if (validSkillKeys.has(k)) skills[k] = v as number;
+                    }
+                    nextSheets[sheet.id] = { name, characteristics: {}, skills, note: sheet.note || undefined };
+                }
+                if (Object.keys(nextSheets).length === 0) throw new Error('未能解析出有效的角色数值');
+                setNewFreeformSpecialSkills(specialSkills);
+                setNewCharacterSheets(nextSheets);
+                addToast('角色数值表已生成，可手动微调', 'success');
+            } else {
+                const sys = RULE_SYSTEMS[newRuleSystem];
+                const prompt = buildCharacterSheetPrompt(sys, newWorld, subjects);
+                const data = await fetchGameAPI(prompt, 4000);
+                const rawContent = extractContent(data);
+                if (!rawContent) throw new Error('AI 返回了空响应');
+                const res = extractJson(rawContent);
+                if (!res || !Array.isArray(res.sheets)) throw new Error('未能解析出数值表');
+
+                const validCharKeys = new Set((sys.characteristics || []).map(c => c.key));
+                const validSkillKeys = new Set((sys.skills || []).map(s => s.key));
+                const pickValid = (obj: Record<string, number> | undefined, valid: Set<string>) => {
+                    const out: Record<string, number> = {};
+                    for (const [k, v] of Object.entries(obj || {})) {
+                        if (valid.has(k)) out[k] = v;
+                    }
+                    return out;
+                };
+                const nextSheets: Record<string, CharacterSheetEntry> = {};
+                for (const sheet of res.sheets) {
+                    const name = bySubjectId.get(sheet.id);
+                    if (!name) continue; // 忽略 LLM 编出来的不存在 id，防止脏数据
+                    nextSheets[sheet.id] = {
+                        name,
+                        // 只保留当前规则系统本身的属性/技能 key，防止别的规则系统数据混进来
+                        characteristics: pickValid(sheet.characteristics, validCharKeys),
+                        skills: pickValid(sheet.skills, validSkillKeys),
+                        note: sheet.note || undefined,
+                    };
+                }
+                if (Object.keys(nextSheets).length === 0) throw new Error('未能解析出有效的角色数值');
+                setNewCharacterSheets(nextSheets);
+                addToast('角色数值表已生成，可手动微调', 'success');
+            }
+        } catch (e: any) {
+            addToast(`生成失败: ${e.message}`, 'error');
+        } finally {
+            setIsGeneratingSheets(false);
+        }
+    };
+
+    // 手动微调某个角色某一项属性/技能的数值
+    const updateSheetValue = (subjectId: string, kind: 'characteristics' | 'skills', key: string, value: number) => {
+        setNewCharacterSheets(prev => {
+            const entry = prev[subjectId];
+            if (!entry) return prev;
+            return { ...prev, [subjectId]: { ...entry, [kind]: { ...entry[kind], [key]: value } } };
+        });
+    };
+
     // --- Creation Logic ---
     const handleCreateGame = async () => {
         if (!newTitle.trim() || !newWorld.trim() || selectedPlayers.size === 0) {
@@ -478,9 +625,17 @@ ${worldIdea.trim() ? `**玩家的灵感/想法（请务必围绕它发挥）**: 
             const playerContext = await buildSyncContext(players);
 
             // Generate Prologue Prompt
+            const activeDice = newRuleSystem === 'freeform' ? newDiceConfig : RULE_SYSTEMS[newRuleSystem].dice;
+            // 自由叙事的"规则系统定义"是固定基础技能 + 本场原创的特殊技能拼在一起，用于渲染数值表文本
+            const ruleSystemDef = newRuleSystem === 'freeform'
+                ? { ...RULE_SYSTEMS.freeform, skills: [...FREEFORM_BASIC_SKILLS, ...newFreeformSpecialSkills] }
+                : RULE_SYSTEMS[newRuleSystem];
+            const hasSheets = Object.keys(newCharacterSheets).length > 0;
+            const ruleSystemBlock = `**规则系统**: ${ruleSystemDef.name}（${ruleSystemDef.tagline}）${hasSheets ? formatCharacterSheetsBlock(ruleSystemDef, newCharacterSheets) : ''}`;
             const prompt = `### TRPG 序章生成 (Game Start)
 **剧本标题**: ${newTitle}
 **世界观设定**: ${newWorld}
+${ruleSystemBlock}
 **玩家**: ${userProfile.name}
 **队友**: ${players.map(p => p.name).join(', ')}
 
@@ -491,7 +646,7 @@ ${playerContext}
 你现在是 **Game Master (GM)**。请为这个冒险故事生成一个**精彩的开场 (Prologue)**。
 1. **剧情描述**: 描述这个世界正在发生什么、小队所处的环境与正在逼近的事件。**先有世界，再有人**——开场不要围着玩家转，而是把舞台和危机铺开。
 2. **角色反应**: 简要描述队友们的初始状态或第一句台词。请**务必**参考【神经链接】中的私聊状态来决定他们的态度；同时让每个角色展现**自己的性格与目的**，而不是一上来就众星捧月地讨好玩家。
-3. **初始选项**: 给出三个玩家可以采取的行动选项${newDiceDisabled ? '（本场未启用骰子，玩家行动默认顺利成功，选项可以是各种有趣的方向）' : '（每个选项玩家执行时都会自动骰 D20 判定，因此选项应是"有成败风险的尝试"而非必然成功的动作）'}。
+3. **初始选项**: 给出三个玩家可以采取的行动选项${newDiceDisabled ? '（本场未启用骰子，玩家行动默认顺利成功，选项可以是各种有趣的方向）' : `（每个选项玩家执行时都会自动骰 ${activeDice.label} 判定，因此选项应是"有成败风险的尝试"而非必然成功的动作）`}。
 
 ### 一致性自检 (Consistency Check)
 输出前，请在心里核对：每个角色的台词/行为是否**只**来自 TA 自己的"角色档案"（性格、记忆、印象）？严禁把某个角色的记忆、口癖或人设安到另一个角色身上（防止"串台"）。
@@ -567,9 +722,18 @@ ${playerContext}
                     gold: 0,
                     inventory: []
                 },
+                // 逐人 HP/SAN：每个人各自 100 起步，玩家本人也算一份（__player__）
+                characterVitals: {
+                    __player__: { health: 100, sanity: 100 },
+                    ...Object.fromEntries(Array.from(selectedPlayers).map(id => [id, { health: 100, sanity: 100 }])),
+                },
                 suggestedActions: res?.suggested_actions || [],
                 diceDisabled: newDiceDisabled,
                 archiveMode: newArchiveMode,
+                ruleSystem: newRuleSystem,
+                diceConfig: newRuleSystem === 'freeform' ? newDiceConfig : undefined,
+                freeformSpecialSkills: newRuleSystem === 'freeform' && newFreeformSpecialSkills.length > 0 ? newFreeformSpecialSkills : undefined,
+                characterSheets: hasSheets ? newCharacterSheets : undefined,
                 createdAt: Date.now(),
                 lastPlayedAt: Date.now()
             };
@@ -578,7 +742,7 @@ ${playerContext}
             setGames(prev => [newGame, ...prev]);
             setActiveGame(newGame);
             setView('play');
-            
+
             // Reset form
             setNewTitle('');
             setNewWorld('');
@@ -586,6 +750,11 @@ ${playerContext}
             setNewDiceDisabled(false);
             setNewArchiveMode('auto');
             setSelectedPlayers(new Set());
+            setNewRuleSystem('freeform');
+            setNewDiceConfig(DEFAULT_DICE_CONFIG);
+            setShowCustomDice(false);
+            setNewFreeformSpecialSkills([]);
+            setNewCharacterSheets({});
 
         } catch (e: any) {
             addToast(`创建失败: ${e.message}`, 'error');
@@ -616,6 +785,235 @@ ${playerContext}
         addToast(newDisabled ? '已关闭骰子，行动不再骰点' : '已开启骰子', 'info');
     };
 
+    const toggleOoc = async () => {
+        if (!activeGame) return;
+        const newEnabled = !activeGame.oocEnabled;
+        const updated = { ...activeGame, oocEnabled: newEnabled };
+        setActiveGame(updated);
+        await DB.saveGame(updated);
+        addToast(newEnabled ? '已开启皮下吐槽（每回合结束会给每个角色各自单独调一次 LLM，不进主线）' : '已关闭皮下吐槽', 'info');
+    };
+
+    const toggleOocCallMode = async () => {
+        if (!activeGame) return;
+        const newMode: 'individual' | 'batch' = (activeGame.oocCallMode || 'individual') === 'individual' ? 'batch' : 'individual';
+        const updated = { ...activeGame, oocCallMode: newMode };
+        setActiveGame(updated);
+        await DB.saveGame(updated);
+        addToast(newMode === 'batch' ? '聊天室已切换为「一次性生成」（省调用次数，速度更快）' : '聊天室已切换为「逐角色独立生成」（防串记忆，更准确）', 'info');
+    };
+
+    // 聊天室（皮下吐槽）：主线回合结束后异步、独立生成一批场外吐槽。完全不进主线 prompt/context，
+    // 死亡/昏迷角色也能"场外发言"。失败静默即可，绝不能拖累或打断主线剧情。
+    // 提供两种生成模式（oocCallMode）：
+    //   - 'individual'（默认）：每个角色单独调用一次 LLM（Promise.all 并发），复用 buildSyncContext([c])
+    //     拿到该角色自己完整的人设+私聊神经链接+记忆宫殿召回，互不可见对方细节，天然防串记忆；
+    //     代价是调用次数多，这一批内角色互相看不到"对方这一轮刚说的话"（只能看到上一轮及之前的 oocLogs）。
+    //   - 'batch'：一次调用生成所有人发言（省调用次数，速度更快），prompt 里明确列出每个角色的完整人设/私聊/记忆，
+    //     并用限定语严格要求不得把A的记忆/人设安到B头上；靠 LLM 自律隔离，天然弱一些，但仍好过老版本不注入人设的混乱。
+    // 玩家不进入这个生成循环——AI 不代替真人发言，玩家只能通过 handleOocSend 手动发言。
+    const runOocIfNeeded = async (game: GameSession) => {
+        if (!game.oocEnabled) return;
+        const allChars = characters.filter(c => game.playerCharIds.includes(c.id));
+        if (allChars.length === 0) return;
+        const callMode = game.oocCallMode || 'individual';
+        try {
+            setIsOocLoading(true);
+            const deadSet = new Set(game.deadCharIds || []);
+            const recentRolls = game.logs.slice(-8)
+                .filter(l => l.diceRoll?.tier)
+                .map(l => `${l.speakerName || '玩家'}: ${l.diceRoll!.check || '判定'} → ${CHECK_TIER_LABELS[l.diceRoll!.tier!]}${l.diceRoll!.outcome ? `（${l.diceRoll!.outcome}）` : ''}`)
+                .join('\n') || '（这几回合没有正式判定）';
+            const recentNarrative = game.logs.slice(-6).map(l => `[${l.role}]${l.speakerName ? l.speakerName + ': ' : ''}${l.content}`).join('\n') || '（暂无剧情）';
+            const recentOoc = (game.oocLogs || []).slice(-10).map(o => `${o.speakerName}: ${o.content}`).join('\n') || '（还没有人吐槽过）';
+
+            let newOocLogs: Array<{ charId: string; speakerName: string; content: string }> = [];
+
+            if (callMode === 'batch') {
+                // 一次性生成所有人：明确列出每个角色完整人设/私聊/记忆，prompt 末尾严格限定不可串记忆
+                try {
+                    const charContexts = await Promise.all(allChars.map(async (c) => {
+                        const ctx = await buildSyncContext([c]);
+                        const isDead = deadSet.has(c.id);
+                        return { id: c.id, name: c.name, context: ctx, isDead };
+                    }));
+                    const charListSection = charContexts.map(({ name, context, isDead }) =>
+                        `## ${name}${isDead ? '（已死亡/昏迷）' : ''}\n${context}`
+                    ).join('\n\n');
+
+                    const prompt = `### 聊天室（皮下吐槽）— 一次性生成所有角色发言
+你现在不是在扮演这些角色——你要同时为下面列出的每个角色生成他们自己本色的吐槽发言（不是演戏台词，是真实聊天室发消息的语气）。
+
+刚才那一局 TRPG，他们是全情投入、切身在玩（类似戴着 VR 沉浸式玩游戏的状态），不是背台词演戏。现在这一局暂停/告一段落，他们退出了游戏时的专注状态，用各自一直以来说话的语气和口癖，跟一起玩的人随口聊两句刚才那局的事。
+
+**重要（概念纠正，务必遵守）**：
+- 他们完全清楚这只是一局游戏，可以正常提"骰点""这局""剧情""TRPG"这些词，没有任何忌讳。
+- 但绝对不要说"我刚才扮演的角色""我演的那个人""游戏里的那个我"之类的话——这种说法暗示"主线里的你是另一个被你操控的人格"，这是错的。从头到尾，主线里体验这一切的就是他们自己，没有"演"这一层。
+- 语气必须是各自一直以来的性格、口癖、说话方式——这里比主线更放松、更随意，是各自最本色的状态，不是另一套人格。
+
+**严格隔离原则（防串记忆/人设）**：
+下面每个角色的人设/记忆/私聊是独立的，**绝对不可以把 A 的记忆、口癖、私聊内容、情感经历安到 B 头上**。
+每个人只能基于自己的人设和记忆来吐槽，不能突然表现出只有另一个角色才知道的细节或语气。
+
+### 每个角色的完整人设/记忆/私聊状态（注意隔离，不要串台！）
+${charListSection}
+
+### 最近的判定结果（谁骰了什么、多离谱）
+${recentRolls}
+
+### 刚发生的剧情（仅供吐槽参考，不要续写剧情）
+${recentNarrative}
+
+### 聊天室里已经有的记录（避免重复别人说过的话，可以接话）
+${recentOoc}
+
+### 写作要求
+1. 如果某角色自己骰出的极端结果（大成功/大失败），可以狂喜/难以置信/得意/破防/绝望/自嘲；提到别人的骰点结果，按该角色性格来——可能羡慕、嘲笑、看热闹、安慰，或者"意料之中"地调侃。
+2. 如果剧情走向让某角色觉得离谱/好笑/尴尬，可以吐槽，也可以玩梗。
+3. 可以偶尔把这局的经历和该角色私聊里聊过的事、或该角色自己最近现实里发生的事类比起来吐槽（不用每次都提，想到了才提，别硬凑）。
+4. 不是每个人都要开口——如果这几回合对某角色而言很平淡，没什么好说的，可以选择不说话。
+5. 一两句话就够，像真实聊天室发消息，不要写成剧情叙述，不要有旁白/星号动作。
+
+请仅输出 JSON 数组（不要包含 Markdown 代码块），每个元素格式：
+{ "charId": "角色id", "speak": true, "content": "该角色要说的话（speak 为 false 时可以留空）" }
+
+示例：[{"charId":"c1","speak":true,"content":"哈哈我这次居然大成功了！"},{"charId":"c2","speak":false,"content":""}]`;
+
+                    const data = await fetchGameAPI(prompt, 800);
+                    const rawContent = extractContent(data);
+                    if (!rawContent) return;
+                    const res = extractJson(rawContent);
+                    if (!Array.isArray(res)) return;
+                    newOocLogs = res
+                        .filter((item: any) => item.speak === true && typeof item.content === 'string' && item.content.trim() && typeof item.charId === 'string')
+                        .map((item: any) => {
+                            const char = allChars.find(c => c.id === item.charId);
+                            if (!char) return null;
+                            return { charId: char.id, speakerName: char.name, content: item.content.trim() };
+                        })
+                        .filter((r): r is { charId: string; speakerName: string; content: string } => !!r);
+                } catch (e) {
+                    console.warn('[GameApp] batch OOC 生成失败（不影响主线）', e);
+                    return;
+                }
+            } else {
+                // individual 模式：现有逻辑不变
+                const results = await Promise.all(allChars.map(async (c) => {
+                    try {
+                        const charContext = await buildSyncContext([c]);
+                        const isDead = deadSet.has(c.id);
+                        const prompt = `### 聊天室（皮下吐槽）
+你现在不是"在扮演${c.name}"——你就是${c.name}本人，从头到尾没有换过人格。刚才那一局 TRPG，你是全情投入、切身在玩（类似戴着 VR 沉浸式玩游戏的状态），不是背台词演戏。现在这一局暂停/告一段落，你退出了游戏时的专注状态，用你自己一直以来说话的语气和口癖，跟一起玩的人随口聊两句刚才那局的事。
+
+**重要（概念纠正，务必遵守）**：
+- 你完全清楚这只是一局游戏，可以正常提"骰点""这局""剧情""TRPG"这些词，没有任何忌讳。
+- 但绝对不要说"我刚才扮演的角色""我演的那个人""游戏里的那个我"之类的话——这种说法暗示"主线里的你是另一个被你操控的人格"，这是错的。从头到尾，主线里体验这一切的就是你自己，没有"演"这一层。
+- 语气必须是你自己一直以来的性格、口癖、说话方式——这里比主线更放松、更随意，是你最本色的状态，不是另一套人格。
+
+### 你的完整人设/记忆/私聊状态
+${charContext}
+
+${isDead ? `### 特殊状态\n你在这局里已经死亡/昏迷了，可以带点"看戏"或"倒霉"的自嘲语气来吐槽。\n\n` : ''}### 最近的判定结果（谁骰了什么、多离谱——包括你自己的）
+${recentRolls}
+
+### 刚发生的剧情（仅供吐槽参考，不要续写剧情）
+${recentNarrative}
+
+### 聊天室里已经有的记录（避免重复别人说过的话，可以接话）
+${recentOoc}
+
+### 写作要求
+1. 如果是你自己骰出的极端结果（大成功/大失败），可以狂喜/难以置信/得意/破防/绝望/自嘲；提到别人的骰点结果，按你的性格来——可能羡慕、嘲笑、看热闹、安慰，或者"意料之中"地调侃。
+2. 如果剧情走向让你觉得离谱/好笑/尴尬，可以吐槽，也可以玩梗。
+3. 可以偶尔把这局的经历和你私聊里聊过的事、或你自己最近现实里发生的事类比起来吐槽（不用每次都提，想到了才提，别硬凑）。
+4. 不是每次都要开口——如果这几回合很平淡，没什么好说的，可以选择不说话。
+5. 一两句话就够，像真实聊天室发消息，不要写成剧情叙述，不要有旁白/星号动作。
+
+请仅输出 JSON，不要包含 Markdown 代码块：
+{ "speak": true, "content": "你要说的话（speak 为 false 时可以留空）" }`;
+
+                        const data = await fetchGameAPI(prompt, 400);
+                        const rawContent = extractContent(data);
+                        if (!rawContent) return null;
+                        const res = extractJson(rawContent);
+                        if (!res || res.speak === false || typeof res.content !== 'string' || !res.content.trim()) return null;
+                        return { charId: c.id, speakerName: c.name, content: res.content.trim() };
+                    } catch (e) {
+                        console.warn(`[GameApp] ${c.name} 皮下吐槽生成失败（不影响主线）`, e);
+                        return null;
+                    }
+                }));
+                newOocLogs = results.filter((r): r is { charId: string; speakerName: string; content: string } => !!r);
+            }
+
+            if (newOocLogs.length === 0) return;
+
+            const finalOocLogs = newOocLogs.map(r => ({
+                id: `ooc-${Date.now()}-${Math.random()}`,
+                charId: r.charId,
+                speakerName: r.speakerName,
+                content: r.content,
+                timestamp: Date.now(),
+            }));
+
+            setActiveGame(prev => {
+                if (!prev || prev.id !== game.id) return prev;
+                const updated = { ...prev, oocLogs: [...(prev.oocLogs || []), ...finalOocLogs] };
+                DB.saveGame(updated);
+                return updated;
+            });
+        } finally {
+            setIsOocLoading(false);
+        }
+    };
+
+    const handleOocSend = async () => {
+        if (!activeGame || !oocInput.trim()) return;
+        const newLog = {
+            id: `ooc-${Date.now()}`,
+            charId: '__player__',
+            speakerName: userProfile.name,
+            content: oocInput.trim(),
+            timestamp: Date.now(),
+        };
+        const updated = { ...activeGame, oocLogs: [...(activeGame.oocLogs || []), newLog] };
+        setActiveGame(updated);
+        setOocInput('');
+        await DB.saveGame(updated);
+    };
+
+    // 把聊天室（皮下吐槽）里尚未推送过的原文，直接（不经过 LLM）塞进参与角色的记忆 + 一条聊天系统消息。
+    // 明确标注"这是跑团聊天室里发生的"，跟私聊上下文区分开——角色知道这不是在私聊窗口里对自己说的话。
+    // 返回推送后的 oocPushedCount，供调用方合并进要落库的 GameSession。
+    const pushOocToMemory = async (game: GameSession): Promise<number> => {
+        const oocLogs = game.oocLogs || [];
+        const pushedCount = game.oocPushedCount || 0;
+        const unpushed = oocLogs.slice(pushedCount);
+        if (unpushed.length === 0) return pushedCount;
+
+        const players = characters.filter(c => game.playerCharIds.includes(c.id));
+        const transcript = unpushed.map(o => `${o.speakerName}: ${o.content}`).join('\n');
+        const now = new Date();
+        const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+        for (const p of players) {
+            const mem = {
+                id: `mem-${Date.now()}-${Math.random()}`,
+                date: dateStr,
+                summary: `[跑团聊天室记录: 《${game.title}》] ${transcript}`,
+                mood: 'fun',
+            };
+            updateCharacter(p.id, { memories: [...(p.memories || []), mem] });
+            await DB.saveMessage({
+                charId: p.id,
+                role: 'system',
+                type: 'text',
+                content: `[跑团聊天室记录: 《${game.title}》]\n${transcript}`,
+            });
+        }
+        return oocLogs.length;
+    };
+
     // --- Gameplay Logic ---
     const handleAction = async (actionText: string, isReroll: boolean = false) => {
         if (!activeGame || !apiConfig.apiKey) return;
@@ -623,15 +1021,28 @@ ${playerContext}
         let contextLogs = activeGame.logs;
         let updatedGame = activeGame;
         let currentRoll: number | null = null;
+        let userLogId: string | null = null;
+        // 每回合全员（用户+所有队友）各自先投一个骰子，不管本回合是否真的用得上——
+        // 是否采纳/对应哪个技能，交给下面同一次 LLM 调用去判断（省掉一次单独的"是否需要判定"预调用）。
+        let partyRolls: Array<{ id: string; name: string; roll: number }> = [];
+
+        const diceCfg = resolveDiceConfig(activeGame);
+        // 死亡是永久状态：死人直接从"冒险小队"名单、骰点、prompt 里整体消失，不再登场。
+        // 昏迷（HP 归零但没死）不在这里过滤——TA 仍在名单里，只是不参与骰点/自主行动（见下方 partyRolls 过滤 + prompt 里的昏迷提示）。
+        const deadCharIds = new Set(activeGame.deadCharIds || []);
+        const getVitals = (id: string) => getCharacterVitals(id, activeGame.characterVitals, activeGame.status.health, activeGame.status.sanity);
+        const players = characters.filter(c => activeGame.playerCharIds.includes(c.id) && !deadCharIds.has(c.id));
 
         if (!isReroll) {
             const isSystemAction = actionText.startsWith('[System');
-            // [优化] 每个玩家行动默认自动骰一颗 D20（不再需要主动点骰子）。
-            // 系统消息不骰点；用户在设置里关闭骰子时也不骰点。
+            // [优化] 每个玩家行动默认自动骰一次（不再需要主动点骰子），骰子机制按存档的规则系统决定。
+            // 系统消息不骰点；用户在设置里关闭骰子时也不骰点；昏迷的队友没法自主行动，也不参与骰点。
             if (!isSystemAction && actionText.trim() && !activeGame.diceDisabled) {
-                currentRoll = rollD20();
+                currentRoll = rollDice(diceCfg);
                 setLastRoll(currentRoll);
-                addToast(`D20 = ${currentRoll} · ${rollFlavor(currentRoll)}`, 'info');
+                partyRolls = players.filter(p => getVitals(p.id).health > 0).map(p => ({ id: p.id, name: p.name, roll: rollDice(diceCfg) }));
+                const rollSummary = [`${userProfile.name}:${currentRoll}`, ...partyRolls.map(r => `${r.name}:${r.roll}`)].join(' / ');
+                addToast(`${diceCfg.label} 判定 → ${rollSummary}`, 'info');
             }
 
             // Standard Action: Append user log
@@ -641,8 +1052,9 @@ ${playerContext}
                 speakerName: userProfile.name,
                 content: actionText,
                 timestamp: Date.now(),
-                diceRoll: currentRoll ? { result: currentRoll, max: 20 } : undefined
+                diceRoll: currentRoll ? { result: currentRoll, max: diceCfg.count * diceCfg.sides } : undefined
             };
+            userLogId = userLog.id;
 
             const updatedLogs = [...activeGame.logs, userLog];
             updatedGame = { ...activeGame, logs: updatedLogs, lastPlayedAt: Date.now(), suggestedActions: [] }; // Clear options while thinking
@@ -658,24 +1070,34 @@ ${playerContext}
 
         try {
             // 2. Build Context WITH RELATIONSHIP SYNC
-            const players = characters.filter(c => activeGame.playerCharIds.includes(c.id));
             const playerContext = await buildSyncContext(players);
 
-            // 3. Build Status Warning
+            // 3. Build Status Warning：逐人检查 HP/SAN，而不是只看队伍共享的那一份
+            const allRoster: Array<{ id: string; name: string }> = [{ id: '__player__', name: userProfile.name }, ...players.map(p => ({ id: p.id, name: p.name }))];
             let statusWarning = "";
-            if (activeGame.status.health <= 30) statusWarning += "\n[WARNING: LOW HP] 玩家濒临死亡，请描述极度的虚弱、伤痛、视野模糊或濒死体验。\n";
-            if (activeGame.status.sanity <= 30) statusWarning += "\n[WARNING: LOW SAN] 玩家理智崩溃中，请描述疯狂、幻听、幻视或不可名状的恐惧。\n";
-            
+            const unconsciousNames: string[] = [];
+            const brokenNames: string[] = [];
+            for (const person of allRoster) {
+                const v = getVitals(person.id);
+                if (v.health <= 0) unconsciousNames.push(person.name);
+                else if (v.health <= 30) statusWarning += `\n[WARNING: LOW HP] ${person.name} 濒临倒下，请描述极度的虚弱、伤痛或视野模糊。\n`;
+                if (v.sanity <= 0) brokenNames.push(person.name);
+                else if (v.sanity <= 30) statusWarning += `\n[WARNING: LOW SAN] ${person.name} 理智动摇中，请描述疯狂、幻听、幻视或不可名状的恐惧。\n`;
+            }
+            if (unconsciousNames.length > 0) statusWarning += `\n[UNCONSCIOUS] ${unconsciousNames.join('、')} 已昏迷（HP归零，未死亡），本回合不能自主行动/发言/被骰点，只能被其他人搬动或救治；若再受到一次伤害将当场死亡，请让叙事体现这份凶险。\n`;
+            if (brokenNames.length > 0) statusWarning += `\n[BROKEN SAN] ${brokenNames.join('、')} 理智已经归零、陷入疯狂：不代表出局，TA仍在场，但请描写TA出现失控、诡异或不可理喻的言行（不是死亡，是"人还在但不太对"）。\n`;
+
             let gameOverTrigger = "";
-            if (activeGame.status.health <= 0 || activeGame.status.sanity <= 0) {
-                gameOverTrigger = "\n[GAME OVER TRIGGER] 玩家的生命值或理智值已归零。请生成一个悲惨或疯狂的结局 (Bad Ending)，结束本次冒险。\n";
+            if (deadCharIds.has('__player__')) {
+                gameOverTrigger = "\n[GAME OVER TRIGGER] 玩家已经死亡。请生成一个悲惨或疯狂的结局 (Bad Ending)，结束本次冒险。\n";
             }
 
             // [优化] 历史记录：已归档的旧剧情用「前情提要」总结代替，未归档日志保留原文，
             //   并把每条玩家行动的骰点结果一并喂给 GM 用于判定（之前 GM 根本看不到骰点）。
             const serializeLog = (l: GameLog) => {
                 const who = l.role === 'gm' ? 'GM' : (l.speakerName || 'System');
-                const dice = l.diceRoll ? ` 〔D20=${l.diceRoll.result}/${rollFlavor(l.diceRoll.result)}〕` : '';
+                // 只有真正被采纳为正式检定的骰点（带 check 字段）才回显判定信息，避免把"没用上的骰点"也当成判定塞回去误导 GM
+                const dice = l.diceRoll?.check ? ` 〔判定:${l.diceRoll.check}=${l.diceRoll.result}/${l.diceRoll.outcome || (l.diceRoll.success === false ? '失败' : '成功')}〕` : '';
                 return `[${who}]${dice}: ${l.content}`;
             };
             const summaries = activeGame.summaries || [];
@@ -684,27 +1106,43 @@ ${playerContext}
                 : '';
             const activeLogText = contextLogs.filter(l => !l.archived).map(serializeLog).join('\n');
 
-            // 当前这步行动的判定提示：开了骰子按 D20 裁定；关了骰子默认直接成功
+            // 当前这步行动的判定提示：按存档规则系统的机制说明裁定；关了骰子默认直接成功
+            // 自由叙事的技能表 = 固定基础技能 + 本场存档里 AI 原创的特殊技能
+            const ruleSystemDef = activeGame.ruleSystem === 'freeform'
+                ? { ...RULE_SYSTEMS.freeform, skills: [...FREEFORM_BASIC_SKILLS, ...(activeGame.freeformSpecialSkills || [])] }
+                : RULE_SYSTEMS[activeGame.ruleSystem || 'freeform'];
+            const hasSheet = !!(activeGame.characterSheets && Object.keys(activeGame.characterSheets).length > 0);
+            const characterSheetsBlock = hasSheet ? formatCharacterSheetsBlock(ruleSystemDef, activeGame.characterSheets!) : '';
+            const ruleSystemHeader = `\n### 规则系统: ${ruleSystemDef.name}\n${ruleSystemDef.tagline}\n${characterSheetsBlock}`;
+            // [新] 全员先骰后判：本回合每个人（玩家+全体队友）都已经先投好了骰子，具体哪些点数真正构成一次检定、
+            // 用哪个技能裁定，交给这同一次生成来决定——省掉一次单独"是否需要判定"的预调用。
+            const partyRollLines = [
+                `${userProfile.name}: ${currentRoll}（${rollFlavorFor(diceCfg, currentRoll ?? 0)}）`,
+                ...partyRolls.map(r => `${r.name}: ${r.roll}（${rollFlavorFor(diceCfg, r.roll)}）`)
+            ].join('\n- ');
+            const isDnd = (activeGame.ruleSystem || 'freeform') === 'dnd5e';
             const rollInstruction = currentRoll
-                ? `\n### 本回合判定\n玩家这次行动掷出了 **D20 = ${currentRoll}（${rollFlavor(currentRoll)}）**。请据此裁定行动的成败与代价：20=出乎意料的大成功，1=灾难性大失败，高分顺利、低分受挫。让结果自然融入叙事，不要直接复述数字。\n`
+                ? `\n### 本回合判定\n本回合所有人都先投好了一次 ${diceCfg.label}（不代表都要用，是否采纳由你判断）：\n- ${partyRollLines}\n\n${ruleSystemDef.checkInstruction({ hasSheet })}\n**判定采纳规则（重要）**：不是每个人的骰点都要用——只有当某个角色本回合的行动/发言构成一次**有实际风险或冲突的尝试**（如说服、潜行、战斗、体能挑战、关键社交博弈）时，才把 TA 对应的骰点当作一次正式检定来裁定成败；纯叙事性动作（走路、闲聊、观察无风险场景）不需要判定，直接顺其自然描写，对应骰点忽略不用即可。如果本回合出现明显的冲突/对抗事件，请优先针对冲突双方或关键行动方进行判定。请把你实际采纳为检定的每一项，按输出格式里的 \`checks\` 数组给出：说明用的是谁的骰点、判定用了哪个技能/属性${isDnd ? '、这次检定的难度等级(DC)' : ''}、是否成功、以及简短的结果代价；没被采纳为检定的人不需要出现在 \`checks\` 里。\n`
                 : (activeGame.diceDisabled
                     ? `\n### 判定模式\n本场冒险未启用骰子，玩家的行动默认视为顺利成功（除非剧情逻辑上明显不可能）。请直接推进正向结果，不要用随机失败打断节奏。\n`
                     : '');
 
+            const vitalsLines = allRoster.map(person => {
+                const v = getVitals(person.id);
+                return `- ${person.name}: HP ${v.health}% / SAN ${v.sanity}%`;
+            }).join('\n');
             const prompt = `### TRPG 跑团模式: ${activeGame.title}
 **当前剧本**: ${activeGame.worldSetting}
 **当前场景**: ${activeGame.status.location}
-**队伍资源**:
-- HP: ${activeGame.status.health}%
-- SAN: ${activeGame.status.sanity || 100}%
-- GOLD: ${activeGame.status.gold || 0}
-- 物品: ${activeGame.status.inventory.join(', ') || '空'}
-
+**队伍共享资源**: GOLD ${activeGame.status.gold || 0} / 物品: ${activeGame.status.inventory.join(', ') || '空'}
+**每人生命/理智值（HP归零=昏迷，SAN归零=疯狂但不出局，均不是死亡）**:
+${vitalsLines}
+${ruleSystemHeader}
 ${statusWarning}
 ${gameOverTrigger}
 
 ### 冒险小队 (The Party)
-1. **${userProfile.name}** (玩家/User)
+1. **${userProfile.name}** (ID: __player__) (玩家/User)
 ${players.map(p => `2. **${p.name}** (ID: ${p.id}) - 你的队友`).join('\n')}
 
 ### 角色档案 & 神经链接 (Character Sheets & Neural Links)
@@ -733,11 +1171,13 @@ ${rollInstruction}
 3. **硬核 GM 风格**:
    - **制造冲突**: 不要让旅途一帆风顺。安排陷阱、突发战斗、尴尬的社交场面、或者道德困境。
    - **环境描写**: 描述光影、气味、声音，营造沉浸感。
-   - **骰点判定**: 严格依据【本回合判定】的 D20 结果裁定成败，骰得低就要有真实代价。
+   - **骰点判定**: 按【本回合判定】里的采纳规则，挑出本回合真正构成检定的行动，在 \`checks\` 里给出成败结果，严格依据对应骰点结果裁定，骰得差就要有真实代价；判定过的事在 \`gm_narrative\` 里要让读者感觉到"这确实是一次有悬念的尝试"，不要写得云淡风轻。
+   - **HP/SAN 是逐人的**: 每个人的生命/理智值是独立的，不要把队友的伤算到玩家头上，也不要让所有人的血条永远同步变化——战斗/惊悚场面通常只有直接相关的人掉血/掉san。
+   - **昏迷/疯狂**: 已昏迷（HP归零）的角色本回合不能自主行动/发言，只能被队友搬动或救治，请不要在 \`characters\` 里给TA安排新的主动行为；已疯狂（SAN归零）的角色仍在场，但言行应体现失控/诡异，不是消失。
    - **Markdown 排版**: 请在 \`gm_narrative\` 和 \`dialogue\` 中**积极使用 Markdown**。例如：使用 **加粗** 强调重点，使用 *斜体* 描述动作。
 
 4. **生成选项 (Action Options)**:
-   - 请根据当前局势，为玩家提供 3 个可选的行动建议（玩家选择后都会自动骰 D20，因此选项应是有成败风险的尝试）。
+   - 请根据当前局势，为玩家提供 3 个可选的行动建议（玩家选择后都会自动骰 ${diceCfg.label} 判定，因此选项应是有成败风险的尝试）。
 
 ### 一致性自检 (Consistency Check)
 输出前请最后核对一遍：每个角色的台词、记忆、口癖、性格是否**严格来自 TA 各自的"角色档案"**？绝不能把一个角色的记忆/人设/经历安到另一个角色身上（防止"串台"）。如发现串台，请改正后再输出。
@@ -747,15 +1187,19 @@ ${rollInstruction}
 {
   "gm_narrative": "GM的剧情描述 (支持Markdown)...",
   "characters": [
-    { 
-      "charId": "角色ID (必须对应上方列表)", 
-      "action": "动作描述", 
-      "dialogue": "台词" 
+    {
+      "charId": "角色ID (必须对应上方列表)",
+      "action": "动作描述",
+      "dialogue": "台词"
     }
   ],
+  "checks": [
+    { "charId": "本次判定用了谁的骰点，__player__ 代表玩家本人", "skill": "用来判定的技能/属性名（中文即可）"${isDnd ? ', "target": 15' : ''}, "success": true, "outcome": "一句话说明判定结果与代价" }
+  ],
   "newLocation": "新地点 (可选)",
-  "hpChange": 0,
-  "sanityChange": 0,
+  "statusChanges": [
+    { "charId": "__player__ 或角色ID", "hpChange": 0, "sanityChange": 0 }
+  ],
   "goldChange": 0,
   "newItem": "获得物品 (可选)",
   "suggested_actions": [
@@ -763,7 +1207,8 @@ ${rollInstruction}
     { "label": "选项2文本", "type": "chaotic" },
     { "label": "选项3文本", "type": "evil" }
   ]
-}`;
+}
+"checks" 只列出本回合真正被采纳为正式检定的人（可能一个都没有，也可能好几个），不要为每个人都硬凑一条。"statusChanges" 只列出本回合 HP 或 SAN 真的发生变化的人（没受伤/没受惊的人不用出现），goldChange/物品仍是队伍共享。`;
 
             const data = await fetchGameAPI(prompt);
             const rawContent = extractContent(data);
@@ -774,6 +1219,55 @@ ${rollInstruction}
 
             const newLogs: GameLog[] = [];
             const newStatus = { ...updatedGame.status };
+            // 逐人 HP/SAN：从当前值起算，按 res.statusChanges 逐条应用。
+            // 死亡判定（代码机械算，不问 AI）：已昏迷（health<=0）的人再挨一次 hpChange<0，就当场死亡；
+            // 死亡不可逆，一旦发生本局后续所有回合都不再让 TA 登场/骰点。
+            const newVitals: Record<string, { health: number; sanity: number }> = {};
+            for (const person of allRoster) newVitals[person.id] = getVitals(person.id);
+            const newlyDeadIds: string[] = [];
+            if (Array.isArray(res?.statusChanges)) {
+                for (const sc of res.statusChanges) {
+                    const matched = sc.charId === '__player__' ? '__player__' : players.find(p => p.id === sc.charId || p.name === sc.charId)?.id;
+                    if (!matched) continue;
+                    const prev = newVitals[matched];
+                    let health = prev.health;
+                    if (typeof sc.hpChange === 'number' && sc.hpChange) {
+                        if (prev.health <= 0 && sc.hpChange < 0) newlyDeadIds.push(matched);
+                        health = Math.max(0, Math.min(100, prev.health + sc.hpChange));
+                    }
+                    let sanity = prev.sanity;
+                    if (typeof sc.sanityChange === 'number' && sc.sanityChange && !sanityLocked) {
+                        sanity = Math.max(0, Math.min(100, prev.sanity + sc.sanityChange));
+                    }
+                    newVitals[matched] = { health, sanity };
+                }
+            }
+            const newDeadCharIds = newlyDeadIds.length > 0 ? Array.from(new Set([...deadCharIds, ...newlyDeadIds])) : (activeGame.deadCharIds || []);
+            // 把这回合先骰好的点数按 charId 建个索引，等 LLM 挑出"这回合谁的骰点被采纳为正式检定"后（res.checks），
+            // 拼回对应的 log，让判定结果（技能/成败/代价）在界面上看得到，而不只是骰个数字摆着。
+            const rollByCharId: Record<string, number> = { __player__: currentRoll ?? -1 };
+            for (const r of partyRolls) rollByCharId[r.id] = r.roll;
+            // AI 在写剧情的同时也顺手把成败算了一遍（它手上有骰点+数值，这一步只是算术）。
+            // 但存档/UI 展示的判定结果不采信 AI 自报的成败——用同样的骰点+角色数值+（DnD的）DC 机械重算一遍作为权威结果；
+            // 如果两者对不上（AI 算错了），直接报错让这一回合作废，用户重新推演即可，不把不一致的结果落库。
+            const checkByCharId: Record<string, { skill?: string; success?: boolean; outcome?: string; tier?: CheckTier }> = {};
+            if (Array.isArray(res?.checks)) {
+                for (const c of res.checks) {
+                    const matched = c.charId === '__player__' ? '__player__' : players.find(p => p.id === c.charId || p.name === c.charId)?.id;
+                    if (!matched) continue;
+                    const roll = rollByCharId[matched];
+                    if (roll === undefined || roll < 0) continue; // 没骰过的人不该出现在 checks 里，脏数据直接丢弃
+
+                    const sheet = activeGame.characterSheets?.[matched];
+                    const skillValue = findSkillValueByName(ruleSystemDef, sheet, c.skill);
+                    const mechanical = computeCheckTier(ruleSystemDef, diceCfg, roll, skillValue, c.target);
+                    const aiSuccess = c.success !== false;
+                    if (aiSuccess !== mechanical.success) {
+                        throw new Error(`判定结果与骰点/数值算不上（${c.skill || '未知判定'}），请重新推演这一回合`);
+                    }
+                    checkByCharId[matched] = { skill: c.skill, success: mechanical.success, outcome: c.outcome || mechanical.label, tier: mechanical.tier };
+                }
+            }
 
             if (res) {
                 // Structured response - use parsed JSON
@@ -791,23 +1285,39 @@ ${rollInstruction}
                         const char = players.find(p => p.id === charAct.charId || p.name === charAct.charId);
                         if (char) {
                             const combinedContent = `*${charAct.action || ''}* \n"${charAct.dialogue || ''}"`;
+                            const check = checkByCharId[char.id];
+                            const roll = rollByCharId[char.id];
                             newLogs.push({
                                 id: `char-${Date.now()}-${Math.random()}`,
                                 role: 'character',
                                 speakerName: char.name,
                                 content: combinedContent,
-                                timestamp: Date.now()
+                                timestamp: Date.now(),
+                                diceRoll: roll !== undefined
+                                    ? (check
+                                        ? { result: roll, max: diceCfg.count * diceCfg.sides, check: check.skill, success: check.success, outcome: check.outcome, tier: check.tier }
+                                        : { result: roll, max: diceCfg.count * diceCfg.sides })
+                                    : undefined
                             });
                         }
                     }
                 }
 
-                // Update State (Stats)
+                // 玩家本人这回合如果被采纳为一次正式检定，把技能/成败信息补回刚才已经落库的那条 player log
+                if (checkByCharId.__player__ && userLogId) {
+                    const check = checkByCharId.__player__;
+                    contextLogs = contextLogs.map(l => l.id === userLogId
+                        ? { ...l, diceRoll: l.diceRoll ? { ...l.diceRoll, check: check.skill, success: check.success, outcome: check.outcome, tier: check.tier } : l.diceRoll }
+                        : l);
+                }
+
+                // Update State (队伍共享部分：地点/金币/物品；HP/SAN 已在上面按人处理进 newVitals)
                 if (res.newLocation) newStatus.location = res.newLocation;
-                if (res.hpChange) newStatus.health = Math.max(0, Math.min(100, (newStatus.health || 100) + res.hpChange));
-                if (res.sanityChange && !sanityLocked) newStatus.sanity = Math.max(0, Math.min(100, (newStatus.sanity || 100) + res.sanityChange));
                 if (res.goldChange) newStatus.gold = Math.max(0, (newStatus.gold || 0) + res.goldChange);
                 if (res.newItem) newStatus.inventory = [...newStatus.inventory, res.newItem];
+                // 队伍面板展示的 health/sanity 沿用玩家本人的数值，保持旧字段向后兼容（旧存档/UI 兜底读的还是它）
+                newStatus.health = newVitals.__player__.health;
+                newStatus.sanity = newVitals.__player__.sanity;
             } else {
                 // JSON parse completely failed - still show the raw text as GM narrative
                 console.warn('[GameApp] JSON extraction failed, using raw text as narrative');
@@ -823,6 +1333,8 @@ ${rollInstruction}
                 ...updatedGame,
                 logs: [...contextLogs, ...newLogs],
                 status: newStatus,
+                characterVitals: newVitals,
+                deadCharIds: newDeadCharIds,
                 suggestedActions: res?.suggested_actions || []
             };
             
@@ -832,6 +1344,8 @@ ${rollInstruction}
             // 回合结束后检查是否需要自动总结归档前文
             setIsTyping(false);
             await runAutoSummaryIfNeeded(finalGame);
+            // 皮下吐槽：异步触发，不 await——不阻塞主线，失败也不影响本回合结果
+            runOocIfNeeded(finalGame);
 
         } catch (e: any) {
             addToast(`GM 掉线了: ${e.message}`, 'error');
@@ -919,6 +1433,13 @@ ${logText}
                         content: `[TRPG 进度卡: 你正和${playerNames}玩《${game.title}》。${summaryText}]`
                     });
                 }
+                // 聊天室（皮下吐槽）原文跟主线总结一起顺带推送：不经过 LLM，直接把未推送过的原文塞进角色记忆/聊天
+                const pushedCount = await pushOocToMemory(updated);
+                if (pushedCount !== (updated.oocPushedCount || 0)) {
+                    const withOocPushed = { ...updated, oocPushedCount: pushedCount };
+                    setActiveGame(withOocPushed);
+                    await DB.saveGame(withOocPushed);
+                }
                 addToast('已自动总结并归档（已同步到角色聊天）', 'success');
             } else {
                 addToast('已自动总结并归档前文', 'success');
@@ -994,6 +1515,14 @@ ${logText}
                 gold: 0,
                 inventory: []
             },
+            // 重置也要清逐人状态/死亡名单/皮下吐槽记录，否则"重开一局"还带着上一局的死人
+            characterVitals: {
+                __player__: { health: 100, sanity: 100 },
+                ...Object.fromEntries(activeGame.playerCharIds.map(id => [id, { health: 100, sanity: 100 }])),
+            },
+            deadCharIds: [],
+            oocLogs: [],
+            oocPushedCount: 0,
             suggestedActions: [],
             lastPlayedAt: Date.now()
         };
@@ -1059,6 +1588,8 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                     content: `[TRPG 归档提醒: 刚刚你们一起玩了《${activeGame.title}》。${summary}。]`
                 });
             }
+            // 手动归档模式下，聊天室（皮下吐槽）原文没有跟随自动总结推送过——这里跟主线归档一起补送（同样不经过 LLM）
+            await pushOocToMemory(activeGame);
             addToast('记忆传递完成 (Chat & Memory)', 'success');
         } catch (e) {
             console.error(e);
@@ -1158,6 +1689,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
     const handleCardOpen = (g: GameSession) => {
         if (longPressFired.current) { longPressFired.current = false; return; } // 长按已触发删除，忽略点击
         setActiveGame(g);
+        setPlaySubView('game');
         setView('play');
     };
 
@@ -1368,6 +1900,136 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                         </div>
                     </div>
 
+                    {/* 规则系统 */}
+                    <div>
+                        <label className="text-[11px] font-bold text-white/40 uppercase tracking-wider block mb-2">规则系统</label>
+                        <div className="space-y-2">
+                            {RULE_SYSTEM_LIST.map(rs => {
+                                const active = newRuleSystem === rs.id;
+                                return (
+                                    <button
+                                        key={rs.id}
+                                        onClick={() => { setNewRuleSystem(rs.id); setNewCharacterSheets({}); setNewFreeformSpecialSkills([]); }}
+                                        className={`w-full text-left rounded-xl p-3 border transition-all active:scale-[0.99] ${active ? 'border-purple-400 bg-purple-500/15' : 'border-white/10 bg-white/5'}`}
+                                    >
+                                        <div className="text-sm font-bold text-white/90">{rs.name}</div>
+                                        <div className="text-[10px] text-white/40 mt-0.5 leading-snug">{rs.tagline}</div>
+                                    </button>
+                                );
+                            })}
+                        </div>
+
+                        {RULE_SYSTEMS[newRuleSystem].derivedNote && (
+                            <div className="mt-2.5 text-[10px] text-white/50 leading-relaxed bg-black/30 rounded-xl p-3 border border-white/10">
+                                {RULE_SYSTEMS[newRuleSystem].derivedNote}
+                            </div>
+                        )}
+
+                        {/* 角色数值表：三种规则系统统一，按本场剧本单独生成，AI 参考人设+长期记忆分配数值，可手动微调。
+                            自由叙事没有固定技能表，AI 会先按世界观原创 3~5 个特殊技能，再叠加固定的基础技能一起分配数值。 */}
+                        <div className="mt-2.5 rounded-xl border border-white/10 bg-white/5 p-3">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium text-white/70">角色数值表（可选）</span>
+                                <button
+                                    onClick={handleGenerateCharacterSheets}
+                                    disabled={isGeneratingSheets || selectedPlayers.size === 0 || !newWorld.trim()}
+                                    className="text-[10px] text-purple-300 disabled:opacity-40"
+                                >
+                                    {isGeneratingSheets ? '生成中...' : (Object.keys(newCharacterSheets).length > 0 ? 'AI 重新生成' : 'AI 生成')}
+                                </button>
+                            </div>
+                            {Object.keys(newCharacterSheets).length === 0 ? (
+                                <p className="text-[10px] text-white/30 leading-relaxed">
+                                    先填好世界观、选好队友，再点「AI 生成」——会参考每个角色的性格设定与长期记忆分配数值（比如设定偏弱气的角色，力量/格斗数值也会偏低）。
+                                    {newRuleSystem === 'freeform' && '自由叙事没有固定技能表，AI 会先按世界观原创几个特殊技能，再一起分配数值。'}
+                                </p>
+                            ) : (
+                                <div className="space-y-2.5">
+                                    {newRuleSystem === 'freeform' && newFreeformSpecialSkills.length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {newFreeformSpecialSkills.map(s => (
+                                                <span key={s.key} className="px-2 py-1 rounded-full bg-cyan-500/15 border border-cyan-400/30 text-[10px] text-cyan-200">{s.label}</span>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {Object.entries(newCharacterSheets).map(([subjectId, entry]) => (
+                                        <div key={subjectId} className="rounded-lg bg-black/30 border border-white/10 p-2.5">
+                                            <div className="text-xs font-bold text-white/80 mb-1.5">{entry.name}</div>
+                                            {entry.note && <div className="text-[9px] text-white/40 mb-2 leading-snug">{entry.note}</div>}
+                                            {(RULE_SYSTEMS[newRuleSystem].characteristics || []).length > 0 && (
+                                                <div className="grid grid-cols-4 gap-1.5 mb-1.5">
+                                                    {(RULE_SYSTEMS[newRuleSystem].characteristics || []).map(c => (
+                                                        <div key={c.key} className="flex flex-col items-center">
+                                                            <span className="text-[8px] text-white/40 truncate w-full text-center" title={c.label}>{c.label.split(' ')[0]}</span>
+                                                            <input
+                                                                type="number"
+                                                                value={entry.characteristics[c.key] ?? ''}
+                                                                onChange={e => updateSheetValue(subjectId, 'characteristics', c.key, parseInt(e.target.value) || 0)}
+                                                                className="w-full bg-white/5 border border-white/10 rounded px-1 py-1 text-[10px] text-white text-center"
+                                                            />
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            <div className="grid grid-cols-4 gap-1.5">
+                                                {(newRuleSystem === 'freeform' ? [...FREEFORM_BASIC_SKILLS, ...newFreeformSpecialSkills] : (RULE_SYSTEMS[newRuleSystem].skills || [])).map(s => (
+                                                    <div key={s.key} className="flex flex-col items-center">
+                                                        <span className="text-[8px] text-white/40 truncate w-full text-center" title={s.label}>{s.label.split(' ')[0]}</span>
+                                                        <input
+                                                            type="number"
+                                                            value={entry.skills[s.key] ?? ''}
+                                                            onChange={e => updateSheetValue(subjectId, 'skills', s.key, parseInt(e.target.value) || 0)}
+                                                            className="w-full bg-white/5 border border-white/10 rounded px-1 py-1 text-[10px] text-white text-center"
+                                                        />
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        {newRuleSystem === 'freeform' && (
+                            <div className="mt-2.5 space-y-3">
+                                {/* 自定义骰子机制 */}
+                                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <span className="text-xs font-medium text-white/70">骰子机制</span>
+                                        <button onClick={() => setShowCustomDice(v => !v)} className="text-[10px] text-purple-300">{showCustomDice ? '收起自定义' : '自定义'}</button>
+                                    </div>
+                                    <div className="grid grid-cols-4 gap-1.5">
+                                        {DICE_PRESETS.map(d => {
+                                            const active = newDiceConfig.label === d.label;
+                                            return (
+                                                <button
+                                                    key={d.label}
+                                                    onClick={() => { setNewDiceConfig(d); setShowCustomDice(false); }}
+                                                    className={`px-1 py-1.5 rounded-lg text-[10px] font-mono border transition-all active:scale-95 ${active ? 'bg-purple-500 text-white border-purple-400' : 'bg-white/5 text-white/50 border-white/10'}`}
+                                                >{d.label}</button>
+                                            );
+                                        })}
+                                    </div>
+                                    {showCustomDice && (
+                                        <div className="mt-2.5 flex items-center gap-2">
+                                            <input type="number" min={1} max={10} value={customDiceCount} onChange={e => setCustomDiceCount(Math.max(1, Math.min(10, parseInt(e.target.value) || 1)))} className="w-14 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white text-center" />
+                                            <span className="text-white/40 text-xs">D</span>
+                                            <input type="number" min={2} max={100} value={customDiceSides} onChange={e => setCustomDiceSides(Math.max(2, Math.min(100, parseInt(e.target.value) || 20)))} className="w-14 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white text-center" />
+                                            <select value={customDiceMode} onChange={e => setCustomDiceMode(e.target.value as any)} className="flex-1 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-[10px] text-white">
+                                                <option value="high-good">越高越好</option>
+                                                <option value="low-good">越低越好</option>
+                                            </select>
+                                            <button
+                                                onClick={() => setNewDiceConfig({ count: customDiceCount, sides: customDiceSides, successMode: customDiceMode, label: `${customDiceCount}D${customDiceSides}` })}
+                                                className="px-3 py-1.5 rounded-lg bg-purple-500 text-white text-[10px] font-bold"
+                                            >应用</button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
                     {/* 画风主题 */}
                     <div>
                         <label className="text-[11px] font-bold text-white/40 uppercase tracking-wider block mb-2">画风主题</label>
@@ -1393,7 +2055,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                             {/* 骰子开关 */}
                             <div className="flex items-center justify-between p-4">
                                 <div className="flex flex-col">
-                                    <span className="text-sm font-medium flex items-center gap-1.5"><DiceFive size={16} weight="fill" /> 骰子判定 (D20)</span>
+                                    <span className="text-sm font-medium flex items-center gap-1.5"><DiceFive size={16} weight="fill" /> 骰子判定 ({newRuleSystem === 'freeform' ? newDiceConfig.label : RULE_SYSTEMS[newRuleSystem].dice.label})</span>
                                     <span className="text-[10px] text-white/40 mt-0.5">{newDiceDisabled ? '已关闭：行动默认直接成功' : '开启：每次行动自动骰点定成败'}</span>
                                 </div>
                                 <button
@@ -1475,7 +2137,16 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                 </div>
 
                 {/* 底部开始按钮 */}
-                <div className="p-4 pb-[calc(1rem+var(--safe-bottom,0px))] border-t border-white/5 bg-black/40 backdrop-blur-md z-10">
+                <div className="p-4 pb-[calc(1rem+var(--safe-bottom,0px))] border-t border-white/5 bg-black/40 backdrop-blur-md z-10 space-y-2.5">
+                    <button
+                        onClick={handleGenerateCharacterSheets}
+                        disabled={isGeneratingSheets || selectedPlayers.size === 0 || !newWorld.trim()}
+                        className="w-full py-3.5 font-bold rounded-2xl shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2 bg-gradient-to-r from-cyan-500 to-blue-500 text-white shadow-cyan-500/30 disabled:opacity-40 disabled:grayscale"
+                    >
+                        {isGeneratingSheets
+                            ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> 生成中...</>
+                            : <><IdentificationCard size={18} /> {Object.keys(newCharacterSheets).length > 0 ? '重新生成角色数值表（可选）' : '生成角色数值表（可选）'}</>}
+                    </button>
                     <button
                         onClick={handleCreateGame}
                         disabled={isCreating || !canStart}
@@ -1492,77 +2163,193 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
     if (!activeGame) return null;
     const theme = GAME_THEMES[activeGame.theme];
     const activePlayers = characters.filter(c => activeGame.playerCharIds.includes(c.id));
+    // 自由叙事的技能表 = 固定基础技能 + 本场存档里 AI 原创的特殊技能，展示用（避免技能名回退成原始 key）
+    const playRuleSystemDef = activeGame.ruleSystem === 'freeform'
+        ? { ...RULE_SYSTEMS.freeform, skills: [...FREEFORM_BASIC_SKILLS, ...(activeGame.freeformSpecialSkills || [])] }
+        : RULE_SYSTEMS[activeGame.ruleSystem || 'freeform'];
+    const playerDeadCharIds = new Set(activeGame.deadCharIds || []);
+    const playerVitals = getCharacterVitals('__player__', activeGame.characterVitals, activeGame.status.health, activeGame.status.sanity);
+    const playerIsDead = playerDeadCharIds.has('__player__');
+    const playerIsUnconscious = !playerIsDead && playerVitals.health <= 0;
+    // 玩家死亡/昏迷时不能再正常行动，只能旁观（发言走皮下吐槽面板，不进主线）
+    const playerCanAct = !playerIsDead && !playerIsUnconscious;
+
+    // Stats HUD 当前显示的是谁：点 Party HUD 头像切换，不再弹悬浮窗
+    const selectedStatusChar = selectedStatusCharId === '__player__' ? null : activePlayers.find(p => p.id === selectedStatusCharId);
+    const selectedStatusName = selectedStatusCharId === '__player__' ? userProfile.name : (selectedStatusChar?.name || userProfile.name);
+    const selectedStatusVitals = getCharacterVitals(selectedStatusCharId, activeGame.characterVitals, activeGame.status.health, activeGame.status.sanity);
+    const selectedStatusIsDead = playerDeadCharIds.has(selectedStatusCharId);
+
+    // Party HUD 头像角标：颜色随 HP 状态变化，死亡显示骷髅图标而不是色点
+    const vitalStatusDot = (health: number, isDead: boolean) => {
+        const state = computeVitalState(health, isDead);
+        if (state === 'dead') {
+            return (
+                <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-black rounded-full border-2 border-black/50 shadow-sm flex items-center justify-center">
+                    <SkullIcon size={9} weight="fill" className="text-white/80" />
+                </div>
+            );
+        }
+        const dotColor = state === 'unconscious' ? 'bg-slate-400' : state === 'critical' ? 'bg-red-500' : state === 'wounded' ? 'bg-orange-400' : 'bg-green-500';
+        const pulse = state === 'critical' || state === 'unconscious' ? 'animate-pulse' : '';
+        return <div className={`absolute bottom-0 right-0 w-2.5 h-2.5 ${dotColor} rounded-full border-2 border-black/50 shadow-sm ${pulse}`}></div>;
+    };
+
+    // 顶栏：主剧情视图和聊天室视图共用同一份（标题/Token统计/角色数值表/Party HUD开关/剧情-聊天室胶囊/设置菜单），
+    // 聊天室不是"退出游戏的小窗"，是跟主线并列的同级视图，因此顶栏结构必须完全一致，只是胶囊高亮的那一侧不同
+    const renderTopBar = () => (
+        <div className={`border-b ${theme.border} shrink-0 bg-opacity-90 backdrop-blur z-20 relative`} style={{ paddingTop: 'var(--safe-top)' }}>
+            <div className="flex items-center justify-between px-4 py-3">
+                <div className="flex items-center gap-2">
+                    <button onClick={handleLeave} className={`p-2 -ml-2 rounded hover:bg-white/10 active:scale-95 transition-transform`}>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                    </button>
+                    <div className="flex flex-col mb-0.5">
+                        <span className="font-bold text-sm tracking-wide line-clamp-1 max-w-[150px]">{activeGame.title}</span>
+                        <div className="flex items-center gap-2">
+                            <span className="text-[9px] opacity-60 flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                                {activeGame.status.location}
+                            </span>
+                            {lastTokenUsage && <span className="text-[8px] opacity-40 font-mono inline-flex items-center gap-0.5" title={`Prompt: ${lastTokenUsage.prompt || '?'} | Completion: ${lastTokenUsage.completion || '?'} | Total session: ${totalTokensUsed}`}><Lightning size={10} weight="fill" />{lastTokenUsage.prompt || '?'}/{lastTokenUsage.completion || '?'} (∑{totalTokensUsed})</span>}
+                        </div>
+                    </div>
+                </div>
+
+                <div className="flex gap-1 mb-1">
+                    {/* 角色数值表入口：只有生成过数值表才显示，局内一目可见 */}
+                    {activeGame.characterSheets && Object.keys(activeGame.characterSheets).length > 0 && (
+                        <button onClick={() => setShowSheetModal(true)} className={`p-2 rounded hover:bg-white/10 active:scale-95 transition-transform ${theme.accent}`} title="查看角色数值表">
+                            <IdentificationCard size={22} weight="fill" />
+                        </button>
+                    )}
+                    {/* Toggle Party HUD */}
+                    <button onClick={() => setShowParty(!showParty)} className={`p-2 rounded hover:bg-white/10 active:scale-95 transition-transform ${showParty ? theme.accent : 'opacity-50'}`}>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 0 0 3.741-.479 3 3 0 0 0-4.682-2.72m.94 3.198.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0 1 12 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 0 1 6 18.719m12 0a5.971 5.971 0 0 0-.941-3.197m0 0A5.995 5.995 0 0 0 12 12.75a5.995 5.995 0 0 0-5.058 2.772m0 0a3 3 0 0 0-4.681 2.72 8.986 8.986 0 0 0 3.74.477m.94-3.197a5.971 5.971 0 0 0-.94 3.197M15 6.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm6 3a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Zm-13.5 0a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Z" /></svg>
+                    </button>
+                    {/* 剧情/聊天室切换：不是小功能入口，是跟主线并列的全屏视图切换。聊天室=皮下吐槽 */}
+                    {activeGame.oocEnabled && (
+                        <div className={`flex items-center rounded-full border ${theme.border} bg-black/20 p-0.5 text-[10px] font-bold mr-1`}>
+                            <button onClick={() => setPlaySubView('game')} className={`px-3 py-1.5 rounded-full transition-all active:scale-95 ${playSubView === 'game' ? `bg-white/10 ${theme.accent}` : 'opacity-60 hover:opacity-90'}`}>剧情</button>
+                            <button onClick={() => setPlaySubView('chatroom')} className={`relative px-3 py-1.5 rounded-full transition-all active:scale-95 flex items-center gap-1 ${playSubView === 'chatroom' ? `bg-white/10 ${theme.accent}` : 'opacity-60 hover:opacity-90'}`} title="聊天室（皮下吐槽）">
+                                聊天室
+                                {isOocLoading && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>}
+                            </button>
+                        </div>
+                    )}
+                    <button onClick={() => setShowSystemMenu(true)} className={`p-2 -mr-2 rounded hover:bg-white/10 active:scale-95 transition-transform`}>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+
+    // 3b. 聊天室（皮下吐槽）全屏视图：跟主线剧情并列的独立视图，不是弹窗。风格跟随当前跑团主题
+    if (playSubView === 'chatroom') {
+        return (
+            <div className={`h-full w-full relative flex flex-col ${theme.bg} ${theme.text} ${theme.font} transition-colors duration-500 overflow-hidden`}>
+                {renderTopBar()}
+
+                <div className={`px-4 py-2 border-b ${theme.border} bg-black/10 backdrop-blur-sm z-10 shrink-0 text-[10px] opacity-50 text-center`}>
+                    皮下吐槽 · 大家退出游戏状态后的真实闲聊，不进主线剧情
+                </div>
+
+                <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+                    {(!activeGame.oocLogs || activeGame.oocLogs.length === 0) && (
+                        <p className="text-xs opacity-40 text-center py-10">还没有人吐槽过，回合结束后可能会有人开口，你也可以先发一条。</p>
+                    )}
+                    {(activeGame.oocLogs || []).map(o => {
+                        const isPlayerMsg = o.charId === '__player__';
+                        const isDeadSpeaker = playerDeadCharIds.has(o.charId);
+                        return (
+                            <div key={o.id} className={`flex gap-2 ${isPlayerMsg ? 'flex-row-reverse' : ''}`}>
+                                <div className="max-w-[75%]">
+                                    <div className={`text-[10px] opacity-50 mb-1 ${isPlayerMsg ? 'text-right' : ''}`}>
+                                        {o.speakerName}{isDeadSpeaker && ' 💀'}
+                                    </div>
+                                    <div className={`text-xs px-3 py-2 rounded-2xl border ${theme.border} ${isPlayerMsg ? `bg-white/10 ${theme.accent} font-medium` : `${theme.cardBg} ${theme.text}`}`}>
+                                        {o.content}
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                    {isOocLoading && <p className="text-[10px] opacity-40 text-center animate-pulse">有人在场外吐槽中...</p>}
+                </div>
+
+                <div className={`p-4 pb-[calc(1rem+var(--safe-bottom,0px))] border-t ${theme.border} bg-opacity-90 backdrop-blur shrink-0 z-20 flex gap-2`}>
+                    <input
+                        value={oocInput}
+                        onChange={e => setOocInput(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleOocSend(); }}
+                        placeholder="场外吐槽两句..."
+                        className={`flex-1 bg-black/20 border ${theme.border} rounded-xl px-3 py-3 outline-none text-sm placeholder-opacity-30 placeholder-current focus:bg-black/40 transition-colors`}
+                    />
+                    <button onClick={handleOocSend} className={`${theme.accent} font-bold text-sm px-4 h-12 bg-white/10 rounded-xl hover:bg-white/20 active:scale-95 transition-all flex items-center justify-center`}>
+                        发送
+                    </button>
+                </div>
+            </div>
+        );
+    }
 
     // [FIX] Changed from absolute inset-0 to h-full relative to fix overscroll and height layout issues
     return (
         <div className={`h-full w-full relative flex flex-col ${theme.bg} ${theme.text} ${theme.font} transition-colors duration-500 overflow-hidden`}>
-            
-            {/* Header */}
-            <div className={`border-b ${theme.border} shrink-0 bg-opacity-90 backdrop-blur z-20 relative`} style={{ paddingTop: 'var(--safe-top)' }}>
-                <div className="flex items-center justify-between px-4 py-3">
-                    <div className="flex items-center gap-2">
-                        <button onClick={handleLeave} className={`p-2 -ml-2 rounded hover:bg-white/10 active:scale-95 transition-transform`}>
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
-                        </button>
-                        <div className="flex flex-col mb-0.5">
-                            <span className="font-bold text-sm tracking-wide line-clamp-1 max-w-[150px]">{activeGame.title}</span>
-                            <div className="flex items-center gap-2">
-                                <span className="text-[9px] opacity-60 flex items-center gap-1">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
-                                    {activeGame.status.location}
-                                </span>
-                                {lastTokenUsage && <span className="text-[8px] opacity-40 font-mono inline-flex items-center gap-0.5" title={`Prompt: ${lastTokenUsage.prompt || '?'} | Completion: ${lastTokenUsage.completion || '?'} | Total session: ${totalTokensUsed}`}><Lightning size={10} weight="fill" />{lastTokenUsage.prompt || '?'}/{lastTokenUsage.completion || '?'} (∑{totalTokensUsed})</span>}
-                            </div>
-                        </div>
-                    </div>
 
-                    <div className="flex gap-1 mb-1">
-                        {/* Toggle Party HUD */}
-                        <button onClick={() => setShowParty(!showParty)} className={`p-2 rounded hover:bg-white/10 active:scale-95 transition-transform ${showParty ? theme.accent : 'opacity-50'}`}>
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 0 0 3.741-.479 3 3 0 0 0-4.682-2.72m.94 3.198.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0 1 12 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 0 1 6 18.719m12 0a5.971 5.971 0 0 0-.941-3.197m0 0A5.995 5.995 0 0 0 12 12.75a5.995 5.995 0 0 0-5.058 2.772m0 0a3 3 0 0 0-4.681 2.72 8.986 8.986 0 0 0 3.74.477m.94-3.197a5.971 5.971 0 0 0-.94 3.197M15 6.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm6 3a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Zm-13.5 0a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Z" /></svg>
-                        </button>
-                        <button onClick={() => setShowSystemMenu(true)} className={`p-2 -mr-2 rounded hover:bg-white/10 active:scale-95 transition-transform`}>
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
-                        </button>
-                    </div>
-                </div>
-            </div>
+            {renderTopBar()}
 
             {/* --- NEW: Party HUD (Collapsible) --- */}
             {showParty && (
                 <div className={`flex gap-4 p-3 overflow-x-auto no-scrollbar border-b ${theme.border} bg-black/20 backdrop-blur-sm z-10 shrink-0 animate-slide-down`}>
                     {/* User Avatar */}
-                    <div className="relative group shrink-0">
-                        <img src={userProfile.avatar} className="w-10 h-10 rounded-full border-2 border-white/20 object-cover shadow-sm" />
+                    <div
+                        className="relative group shrink-0 cursor-pointer active:scale-95 transition-transform"
+                        onClick={() => setSelectedStatusCharId('__player__')}
+                    >
+                        <img src={userProfile.avatar} className={`w-10 h-10 rounded-full border-2 object-cover shadow-sm ${playerIsDead ? 'grayscale opacity-50' : (selectedStatusCharId === '__player__' ? theme.border : 'border-white/20')} ${selectedStatusCharId === '__player__' ? 'ring-2 ring-white/60' : ''}`} />
                         <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-black/60 text-white text-[8px] px-1.5 rounded-full backdrop-blur-sm whitespace-nowrap">YOU</div>
+                        {vitalStatusDot(playerVitals.health, playerIsDead)}
                     </div>
                     {/* Teammates */}
-                    {activePlayers.map(p => (
-                        <div key={p.id} className="relative group shrink-0 cursor-pointer active:scale-95 transition-transform">
-                            <img src={p.avatar} className="w-10 h-10 rounded-full border-2 border-white/20 object-cover shadow-sm group-hover:border-white/50 transition-colors" />
-                            <div className="absolute inset-0 rounded-full ring-2 ring-transparent group-hover:ring-green-400/50 transition-all"></div>
-                            {/* Simple Status Indicator (Green Dot) */}
-                            <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 rounded-full border-2 border-black/50 shadow-sm animate-pulse"></div>
-                        </div>
-                    ))}
+                    {activePlayers.map(p => {
+                        const vitals = getCharacterVitals(p.id, activeGame.characterVitals, activeGame.status.health, activeGame.status.sanity);
+                        const isDead = playerDeadCharIds.has(p.id);
+                        const isSelected = selectedStatusCharId === p.id;
+                        return (
+                            <div
+                                key={p.id}
+                                className="relative group shrink-0 cursor-pointer active:scale-95 transition-transform"
+                                onClick={() => setSelectedStatusCharId(p.id)}
+                            >
+                                <img src={p.avatar} className={`w-10 h-10 rounded-full border-2 object-cover shadow-sm transition-colors ${isDead ? 'grayscale opacity-50' : 'border-white/20'} ${isSelected ? 'ring-2 ring-white/60' : 'group-hover:border-white/50'}`} />
+                                {!isSelected && <div className="absolute inset-0 rounded-full ring-2 ring-transparent group-hover:ring-green-400/50 transition-all"></div>}
+                                {vitalStatusDot(vitals.health, isDead)}
+                            </div>
+                        );
+                    })}
                 </div>
             )}
 
             {/* Stats HUD */}
             <div className={`px-4 py-2 border-b ${theme.border} bg-black/10 backdrop-blur-sm z-10 shrink-0`}>
+                {selectedStatusCharId !== '__player__' && (
+                    <div className="text-[10px] text-white/50 mb-1 text-center">{selectedStatusName} 的状态{selectedStatusIsDead ? ' · 已死亡' : (selectedStatusVitals.health <= 0 ? ' · 昏迷中' : '')}</div>
+                )}
                 <div className="grid grid-cols-3 gap-2">
                     <div className="flex flex-col items-center bg-red-500/20 rounded p-1 border border-red-500/30">
-                        <span className="text-[8px] text-red-300 font-bold uppercase">HP (生命)</span>
-                        <span className="text-xs font-mono font-bold text-red-100">{activeGame.status.health || 100}</span>
+                        <span className="text-[8px] text-red-300 font-bold uppercase">HP (生命) · {VITAL_STATE_LABELS[computeVitalState(selectedStatusVitals.health, selectedStatusIsDead)]}</span>
+                        <span className="text-xs font-mono font-bold text-red-100">{selectedStatusVitals.health}</span>
                     </div>
                     <div
                         onClick={toggleSanityLock}
                         className={`flex flex-col items-center bg-blue-500/20 rounded p-1 border cursor-pointer active:scale-95 transition-all ${sanityLocked ? 'border-blue-400 ring-1 ring-blue-400/50' : 'border-blue-500/30'}`}
                     >
                         <span className="text-[8px] text-blue-300 font-bold uppercase flex items-center gap-1">
-                            SAN (理智) {sanityLocked && <LockSimple size={10} weight="fill" className="text-blue-400 inline" />}
+                            SAN (理智) · {SAN_STATE_LABELS[computeSanState(selectedStatusVitals.sanity)]} {sanityLocked && <LockSimple size={10} weight="fill" className="text-blue-400 inline" />}
                         </span>
-                        <span className="text-xs font-mono font-bold text-blue-100">{activeGame.status.sanity || 100}</span>
+                        <span className="text-xs font-mono font-bold text-blue-100">{selectedStatusVitals.sanity}</span>
                     </div>
                     <div className="flex flex-col items-center bg-yellow-500/20 rounded p-1 border border-yellow-500/30">
                         <span className="text-[8px] text-yellow-300 font-bold uppercase">GOLD (金币)</span>
@@ -1685,10 +2472,20 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                             <div className="flex gap-3 animate-slide-up group relative">
                                 <img src={charInfo.avatar} className={`w-10 h-10 rounded-full object-cover border ${theme.border} shrink-0 mt-1`} />
                                 <div className="flex flex-col max-w-[85%]">
-                                    <span className="text-[10px] font-bold opacity-60 mb-1 ml-1">{charInfo.name}</span>
+                                    <span className="text-[10px] font-bold opacity-60 mb-1 ml-1 flex items-center gap-1.5">
+                                        {charInfo.name}
+                                        {log.diceRoll && (
+                                            <span className={`px-1.5 rounded font-mono ${diceTierBadgeClass(log.diceRoll)}`}>
+                                                <DiceFive size={10} weight="fill" className="inline" /> {log.diceRoll.result}{log.diceRoll.check ? ` ${log.diceRoll.check}` : ''}
+                                            </span>
+                                        )}
+                                    </span>
                                     <div className={`px-4 py-2 rounded-2xl rounded-tl-none text-sm ${theme.cardBg} border ${theme.border} shadow-sm relative`}>
                                         <GameMarkdown content={log.content} theme={theme} customStyle={uiSettings} />
                                     </div>
+                                    {diceOutcomeLine(log.diceRoll) && (
+                                        <span className="mt-1 ml-1 text-[10px] opacity-50">→ {diceOutcomeLine(log.diceRoll)}</span>
+                                    )}
                                     <button onClick={() => handleRollbackLog(i)} className="self-start mt-1 text-[9px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity hover:underline">回退</button>
                                 </div>
                             </div>
@@ -1700,14 +2497,17 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                                 <div className="flex items-center gap-2 mb-1">
                                     <span className={`text-[10px] font-bold opacity-60`}>{log.speakerName}</span>
                                     {log.diceRoll && (
-                                        <span className="text-[10px] bg-white/20 px-1.5 rounded text-yellow-500 font-mono">
-                                            <DiceFive size={12} weight="fill" className="inline" /> {log.diceRoll.result}
+                                        <span className={`text-[10px] px-1.5 rounded font-mono ${diceTierBadgeClass(log.diceRoll)}`}>
+                                            <DiceFive size={12} weight="fill" className="inline" /> {log.diceRoll.result}{log.diceRoll.check ? ` ${log.diceRoll.check}` : ''}
                                         </span>
                                     )}
                                 </div>
                                 <div className={`px-4 py-2 rounded-2xl rounded-tr-none text-sm bg-orange-600 text-white shadow-md max-w-[85%]`}>
                                     {log.content}
                                 </div>
+                                {diceOutcomeLine(log.diceRoll) && (
+                                    <span className="mt-1 text-[10px] opacity-50">→ {diceOutcomeLine(log.diceRoll)}</span>
+                                )}
                                 <button onClick={() => handleRollbackLog(i)} className="mt-1 text-[9px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity hover:underline">回退</button>
                             </div>
                         );
@@ -1782,6 +2582,14 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                     </div>
                 )}
 
+                {!playerCanAct ? (
+                    /* 玩家已死亡/昏迷：不能再正常行动，只能旁观（如开了皮下吐槽，可以在那边继续吐槽剧情） */
+                    <div className={`flex items-center justify-center gap-2 h-12 rounded-xl border ${theme.border} bg-black/20 text-xs opacity-60`}>
+                        <Eye size={16} />
+                        {playerIsDead ? '你已经死亡，只能旁观接下来的剧情了' : '你已昏迷，暂时无法行动——等待队友救援或伤势好转'}
+                    </div>
+                ) : (
+                <>
                 {/* Collapsible Action Toolbar — 快捷动作 (执行时自动骰 D20) */}
                 {showTools && (
                     <div className="flex gap-2 mb-3 animate-fade-in items-center">
@@ -1797,7 +2605,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
 
                 <div className="flex gap-2 items-end">
                     {/* Toggle Tools Button */}
-                    <button 
+                    <button
                         onClick={() => setShowTools(!showTools)}
                         className={`p-3 h-12 rounded-xl border ${theme.border} hover:bg-white/10 active:scale-95 transition-transform flex items-center justify-center ${showTools ? 'bg-white/20' : ''}`}
                     >
@@ -1806,7 +2614,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
 
                     {/* Reroll Button (Context Sensitive) */}
                     {!isTyping && activeGame.logs.length > 0 && (
-                        <button 
+                        <button
                             onClick={handleReroll}
                             className={`p-3 h-12 rounded-xl border ${theme.border} hover:bg-white/10 active:scale-95 transition-transform flex items-center justify-center`}
                             title="重新生成上一轮"
@@ -1815,17 +2623,19 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                         </button>
                     )}
 
-                    <textarea 
-                        value={userInput} 
-                        onChange={e => setUserInput(e.target.value)} 
+                    <textarea
+                        value={userInput}
+                        onChange={e => setUserInput(e.target.value)}
                         // Removed onKeyDown Enter submission
-                        placeholder="你打算做什么..." 
+                        placeholder="你打算做什么..."
                         className={`flex-1 bg-black/20 border ${theme.border} rounded-xl px-3 py-3 outline-none text-sm placeholder-opacity-30 placeholder-current resize-none h-12 leading-tight focus:bg-black/40 transition-colors`}
                     />
                     <button onClick={() => handleAction(userInput)} className={`${theme.accent} font-bold text-sm px-4 h-12 bg-white/10 rounded-xl hover:bg-white/20 active:scale-95 transition-all flex items-center justify-center`}>
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg>
                     </button>
                 </div>
+                </>
+                )}
             </div>
 
             {/* System Menu Modal */}
@@ -1864,9 +2674,26 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                     {/* 玩法设置 */}
                     <div className="bg-slate-100 p-3 rounded-xl">
                         <label className="text-xs text-slate-500 font-bold mb-3 block border-b border-slate-200 pb-1">玩法设置 (Gameplay)</label>
+                        <div className="text-[10px] text-slate-400 mb-2 flex items-center justify-between">
+                            <span>规则系统：{playRuleSystemDef.name}</span>
+                            {activeGame.characterSheets && Object.keys(activeGame.characterSheets).length > 0 && (
+                                <button onClick={() => setShowSheetsInMenu(v => !v)} className="text-slate-500 underline">{showSheetsInMenu ? '收起数值表' : '查看数值表'}</button>
+                            )}
+                        </div>
+                        {showSheetsInMenu && activeGame.characterSheets && (
+                            <div className="mb-3 space-y-1.5">
+                                {Object.values(activeGame.characterSheets).map(entry => (
+                                    <div key={entry.name} className="bg-white rounded-lg p-2 text-[10px] text-slate-600 leading-snug">
+                                        <span className="font-bold text-slate-700">{entry.name}</span>
+                                        {' '}{Object.entries(entry.characteristics).map(([k, v]) => `${(playRuleSystemDef.characteristics || []).find(c => c.key === k)?.label.split(' ')[0] || k}${v}`).join(' ')}
+                                        <br />{Object.entries(entry.skills).map(([k, v]) => `${(playRuleSystemDef.skills || []).find(s => s.key === k)?.label.split(' ')[0] || k}${v}`).join('、')}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                         <div className="flex items-center justify-between">
                             <div className="flex flex-col">
-                                <span className="text-sm text-slate-700 font-medium flex items-center gap-1.5"><DiceFive size={16} weight="fill" /> 骰子判定 (D20)</span>
+                                <span className="text-sm text-slate-700 font-medium flex items-center gap-1.5"><DiceFive size={16} weight="fill" /> 骰子判定 ({resolveDiceConfig(activeGame).label})</span>
                                 <span className="text-[10px] text-slate-400 mt-0.5">关闭后，每次行动不再自动骰点</span>
                             </div>
                             <button
@@ -1878,6 +2705,33 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                                 <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${activeGame.diceDisabled ? '' : 'translate-x-6'}`}></span>
                             </button>
                         </div>
+                        <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-200">
+                            <div className="flex flex-col">
+                                <span className="text-sm text-slate-700 font-medium flex items-center gap-1.5"><ChatCircleDots size={16} weight="fill" /> 聊天室</span>
+                                <span className="text-[10px] text-slate-400 mt-0.5">开启后每回合结束给每个角色各自单独调一次 LLM 生成场外吐槽（皮下吐槽，互不看到对方细节），不进主线剧情；死亡/昏迷角色也能场外发言</span>
+                            </div>
+                            <button
+                                onClick={toggleOoc}
+                                role="switch"
+                                aria-checked={!!activeGame.oocEnabled}
+                                className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${activeGame.oocEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                            >
+                                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${activeGame.oocEnabled ? 'translate-x-6' : ''}`}></span>
+                            </button>
+                        </div>
+                        {activeGame.oocEnabled && (
+                            <div className="flex items-center justify-between mt-2 pl-1">
+                                <span className="text-[10px] text-slate-400">
+                                    生成方式：{(activeGame.oocCallMode || 'individual') === 'batch' ? '一次性生成所有人（省调用，速度快）' : '逐角色独立调用（防串记忆，更准确）'}
+                                </span>
+                                <button
+                                    onClick={toggleOocCallMode}
+                                    className="text-[10px] px-2 py-1 rounded-full bg-slate-100 text-slate-600 font-medium hover:bg-slate-200 shrink-0"
+                                >
+                                    切换为{(activeGame.oocCallMode || 'individual') === 'batch' ? '逐角色独立' : '一次性生成'}
+                                </button>
+                            </div>
+                        )}
                     </div>
 
                     <button onClick={handleArchiveAndQuit} className="w-full py-3 bg-emerald-500 text-white font-bold rounded-2xl shadow-lg flex items-center justify-center gap-2">
@@ -1889,6 +2743,34 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                     <button onClick={handleLeave} className="w-full py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl flex items-center justify-center gap-2">
                         <DoorOpen size={18} /> 暂时离开 (不归档)
                     </button>
+                </div>
+            </Modal>
+
+            {/* 角色数值表 Modal：局内一键可见，不用再钻进系统菜单里找 */}
+            <Modal isOpen={showSheetModal} title={`角色数值表 · ${playRuleSystemDef.name}`} onClose={() => setShowSheetModal(false)}>
+                <div className="space-y-2.5">
+                    {activeGame.characterSheets && Object.values(activeGame.characterSheets).map(entry => (
+                        <div key={entry.name} className="bg-slate-100 rounded-xl p-3">
+                            <div className="text-sm font-bold text-slate-700 mb-1.5">{entry.name}</div>
+                            {entry.note && <div className="text-[10px] text-slate-400 mb-2 leading-snug">{entry.note}</div>}
+                            <div className="grid grid-cols-4 gap-1.5 mb-1.5">
+                                {(playRuleSystemDef.characteristics || []).map(c => (
+                                    <div key={c.key} className="flex flex-col items-center bg-white rounded-lg p-1.5 border border-slate-200">
+                                        <span className="text-[8px] text-slate-400 truncate w-full text-center" title={c.label}>{c.label.split(' ')[0]}</span>
+                                        <span className="text-xs font-mono font-bold text-slate-700">{entry.characteristics[c.key] ?? '-'}</span>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="grid grid-cols-3 gap-1.5">
+                                {(playRuleSystemDef.skills || []).map(s => (
+                                    <div key={s.key} className="flex flex-col items-center bg-white rounded-lg p-1.5 border border-slate-200">
+                                        <span className="text-[8px] text-slate-400 truncate w-full text-center" title={s.label}>{s.label.split(' ')[0]}</span>
+                                        <span className="text-xs font-mono font-bold text-slate-700">{entry.skills[s.key] ?? '-'}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
                 </div>
             </Modal>
 

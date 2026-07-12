@@ -2941,7 +2941,10 @@ export interface GameLog {
         result: number;
         max: number;
         check?: string;
+        // tier/success 均由代码机械计算（不再由 AI 判断），仅在这次骰点被采纳为正式检定时才有
+        tier?: 'critical_success' | 'success' | 'partial' | 'failure' | 'critical_failure';
         success?: boolean;
+        outcome?: string; // 五档结果的中文标签（如"大成功"），供 UI 展示/tooltip
     };
     // 自动总结后，被归档折叠的日志会标记为 archived（不删除，UI 灰显折叠）
     archived?: boolean;
@@ -2954,6 +2957,15 @@ export interface GameSummary {
     logCount: number;      // 本段总结覆盖了多少条日志
     logIds?: string[];     // 本段总结覆盖的日志 id（用于把原文与总结对应展示）
     createdAt: number;
+}
+
+// 单个角色（或玩家本人）在某一场剧本下的属性/技能数值表。
+// characteristics/skills 的 key 对应 utils/trpgRuleSystems.ts 里 RuleSystemDef.characteristics/skills 的 key。
+export interface CharacterSheetEntry {
+    name: string;                       // 展示用名字（玩家本人 = userProfile.name）
+    characteristics: Record<string, number>; // 如 { STR: 55, DEX: 70, ... }
+    skills: Record<string, number>;      // 如 { spot_hidden: 45, stealth: 60, ... }（CoC 为百分比；DnD 为技能加值，含熟练与属性调整值）
+    note?: string;                       // LLM 生成时附带的一句简短理由（如"体弱多病，力量偏低"），展示用
 }
 
 export interface GameSession {
@@ -2975,6 +2987,38 @@ export interface GameSession {
     // 归档模式：'auto' 满20条自动总结并送进角色 chatapp；'manual' 自动总结但不送，仅手动归档时送。
     // 旧存档无此字段，按 'manual' 处理（不污染旧角色的聊天上下文）。
     archiveMode?: 'auto' | 'manual';
+    // 规则系统：'freeform'（自由叙事，默认，兼容旧存档）| 'coc7' | 'dnd5e'
+    ruleSystem?: 'freeform' | 'coc7' | 'dnd5e';
+    // 自定义骰子机制（仅 freeform 可配，coc7/dnd5e 使用各自固定机制）
+    diceConfig?: { count: number; sides: number; successMode: 'high-good' | 'low-good'; label: string };
+    // 三种规则系统均可选启用：按本场剧本单独生成的逐角色属性/技能数值表，key 为 charId（玩家本人用 '__player__'）。
+    // 由 LLM 参考角色设定+长期记忆生成，故每场剧本都会不同；用户可在创建页手动微调。
+    characterSheets?: Record<string, CharacterSheetEntry>;
+    // 自由叙事专属：AI 按本场世界观原创的"特殊技能"定义（基础技能是固定通用列表，见 utils/trpgRuleSystems.ts FREEFORM_BASIC_SKILLS）。
+    // 与 characterSheets 配套使用，用于渲染技能名 + 喂给 GM prompt。
+    freeformSpecialSkills?: Array<{ key: string; label: string }>;
+    // 逐人 HP/SAN（key 为 charId，玩家本人用 '__player__'）。旧存档没有这个字段时，
+    // 用 status.health/sanity 给每个人现算一份兜底初始值（见 utils/trpgRuleSystems.ts getCharacterVitals）。
+    characterVitals?: Record<string, { health: number; sanity: number }>;
+    // 死亡角色的 charId 集合：一旦死亡永久移出后续队伍名单与骰点，不再登场（用数组存，Set 不便序列化进 IndexedDB）。
+    deadCharIds?: string[];
+    // 皮下吐槽：默认关闭。开启后主线回合结束会额外单独调一次 LLM 生成场外吐槽，写进 oocLogs，
+    // 完全不进主线 prompt/context，用于死亡/旁观角色也能继续参与吐槽游戏走向。
+    oocEnabled?: boolean;
+    // 聊天室生成模式：'individual'（默认，逐角色独立调用 LLM，互不看到对方细节，防串记忆）
+    // | 'batch'（一次性调用生成所有人发言，速度快省调用次数，但角色间记忆隔离弱一些，靠 prompt 限定语约束）。
+    // 旧存档无此字段按 'individual' 处理。
+    oocCallMode?: 'individual' | 'batch';
+    oocLogs?: Array<{
+        id: string;
+        charId: string;       // '__player__' 或角色 id；死亡/昏迷角色也可以发
+        speakerName: string;
+        content: string;
+        timestamp: number;
+    }>;
+    // oocLogs 里已经推送进角色记忆/聊天的条数（高水位游标，不是"归档"标记——聊天室内容本身不折叠/不进主线归档）。
+    // 自动归档模式下每次自动总结都会顺带推一批未推送的原文过去；手动模式下攒到「归档记忆并退出」时一次性带走。
+    oocPushedCount?: number;
     suggestedActions?: GameActionOption[];
     summaries?: GameSummary[];   // 自动总结归档的前情提要
     createdAt: number;
