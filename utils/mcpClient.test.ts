@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
     buildMcpFetchUrl,
     createMcpServer,
@@ -6,10 +6,15 @@ import {
     saveMcpServers,
     exportMcpLocal,
     importMcpLocal,
+    getEnabledMcpServers,
     isMcpChatAvailable,
+    getMcpUseNativeTools,
+    setMcpUseNativeTools,
+    callMcpTool,
+    MCP_REQUEST_TIMEOUT_MS,
     type McpServerConfig,
 } from './mcpClient';
-import { buildMcpOpenAITools } from './mcpToolBridge';
+import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, formatMcpToolResult, MCP_RESULT_MAX_CHARS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls } from './mcpToolBridge';
 
 const mkServer = (over: Partial<McpServerConfig>): McpServerConfig => ({
     ...createMcpServer('测试', 'https://mcp.example.com/mcp'),
@@ -20,6 +25,12 @@ const mkServer = (over: Partial<McpServerConfig>): McpServerConfig => ({
 
 beforeEach(() => {
     localStorage.removeItem('aetheros.mcp.servers');
+    localStorage.removeItem('aetheros.mcp.useNativeTools');
+});
+
+afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
 });
 
 describe('buildMcpFetchUrl', () => {
@@ -37,6 +48,27 @@ describe('buildMcpFetchUrl', () => {
             .toBe('https://w.dev?target=https%3A%2F%2Fa.com%2Fmcp');
         expect(buildMcpFetchUrl({ url: 'https://a.com/mcp', proxyUrl: 'https://w.dev?x=1' }))
             .toBe('https://w.dev?x=1&target=https%3A%2F%2Fa.com%2Fmcp');
+    });
+});
+
+describe('formatMcpToolResult', () => {
+    it('正常体量的结果原样回填不截断（对象序列化, 字符串直出）', () => {
+        expect(formatMcpToolResult({ memories: ['a', 'b'] })).toBe('{"memories":["a","b"]}');
+        expect(formatMcpToolResult('一段长文本'.repeat(500))).toBe('一段长文本'.repeat(500));
+    });
+
+    it('超过安全上限才截断, 并标注全文长度', () => {
+        const huge = 'x'.repeat(MCP_RESULT_MAX_CHARS + 100);
+        const out = formatMcpToolResult(huge);
+        expect(out.startsWith('x'.repeat(100))).toBe(true);
+        expect(out).toContain(`全文共 ${huge.length} 字符`);
+        expect(out.length).toBeLessThan(huge.length);
+    });
+
+    it('不可序列化的对象降级 String()', () => {
+        const cyclic: any = {};
+        cyclic.self = cyclic;
+        expect(formatMcpToolResult(cyclic)).toBe('[object Object]');
     });
 });
 
@@ -65,6 +97,36 @@ describe('服务器配置持久化', () => {
         expect(isMcpChatAvailable()).toBe(false);
         saveMcpServers([mkServer({})]);
         expect(isMcpChatAvailable()).toBe(true);
+    });
+
+    it('角色绑定: charIds 为空/缺省是通用, 非空只对绑定角色可见', () => {
+        saveMcpServers([
+            mkServer({ id: 'srv_common', name: '通用' }),                        // 无 charIds
+            mkServer({ id: 'srv_a', name: '小A专属', charIds: ['char_a'] }),
+            mkServer({ id: 'srv_empty', name: '空数组也通用', charIds: [] }),
+        ]);
+        // 角色 A: 通用 + 专属都可见
+        expect(getEnabledMcpServers('char_a').map(s => s.id)).toEqual(['srv_common', 'srv_a', 'srv_empty']);
+        // 角色 B: 只有通用
+        expect(getEnabledMcpServers('char_b').map(s => s.id)).toEqual(['srv_common', 'srv_empty']);
+        // 无角色上下文: 绑定服务器不可见, 不泄漏专属工具
+        expect(getEnabledMcpServers().map(s => s.id)).toEqual(['srv_common', 'srv_empty']);
+        expect(isMcpChatAvailable('char_b')).toBe(true);
+        // 只剩绑定服务器时, 未绑定角色不进 MCP 模式
+        saveMcpServers([mkServer({ id: 'srv_a', charIds: ['char_a'] })]);
+        expect(isMcpChatAvailable('char_a')).toBe(true);
+        expect(isMcpChatAvailable('char_b')).toBe(false);
+    });
+
+    it('原生 tools 开关默认开启，可持久化并随 MCP 备份导入导出', () => {
+        expect(getMcpUseNativeTools()).toBe(true);
+        setMcpUseNativeTools(false);
+        expect(getMcpUseNativeTools()).toBe(false);
+        const dump = exportMcpLocal();
+        localStorage.removeItem('aetheros.mcp.useNativeTools');
+        expect(getMcpUseNativeTools()).toBe(true);
+        importMcpLocal(dump);
+        expect(getMcpUseNativeTools()).toBe(false);
     });
 });
 
@@ -96,6 +158,17 @@ describe('buildMcpOpenAITools', () => {
     it('未启用 / 未发现工具的服务器不注入', () => {
         saveMcpServers([mkServer({ enabled: false }), mkServer({ tools: [] })]);
         expect(buildMcpOpenAITools().tools).toHaveLength(0);
+    });
+
+    it('按角色过滤: 绑定服务器的工具只注入给绑定角色', () => {
+        const common = mkServer({ name: '通用', tools: [{ name: 'web_search' }] });
+        const bound = mkServer({ name: '记忆库', charIds: ['char_a'], tools: [{ name: 'breath' }] });
+        saveMcpServers([common, bound]);
+        expect(buildMcpOpenAITools('char_a').tools.map(t => t.function.name)).toEqual(['web_search', 'breath']);
+        expect(buildMcpOpenAITools('char_b').tools.map(t => t.function.name)).toEqual(['web_search']);
+        // 单服务器可见时描述不带 [来源] 前缀（multi 按角色可见数算）
+        expect(buildMcpOpenAITools('char_b').tools[0].function.description).not.toContain('[通用]');
+        expect(buildMcpOpenAITools('char_a').tools[0].function.description).toContain('[通用]');
     });
 });
 
@@ -141,5 +214,127 @@ describe('extractTextFakedMcpCalls（掉格式容错）', () => {
         expect(extractTextFakedMcpCalls('句中说 ask_question: 这种格式不算（不在行首）', resolve)).toHaveLength(0);
         expect(extractTextFakedMcpCalls('delete_all("x")', resolve)).toHaveLength(0);
         expect(extractTextFakedMcpCalls('ask_question("a")\nask_question("a")', resolve)).toHaveLength(1);
+    });
+
+    it('工具前角色文字可单独展示，调用语法不会漏进气泡', async () => {
+        const { extractTextFakedMcpCalls } = await import('./mcpToolBridge');
+        const resolve = setup();
+        const raw = '我先帮你看看。\n\nask_question({"question":"SullyOS"})';
+        const calls = extractTextFakedMcpCalls(raw, resolve);
+        expect(stripTextFakedMcpCalls(raw, calls)).toBe('我先帮你看看。');
+    });
+
+    it('MCP 前置气泡剥掉 think、历史时间戳和伪造的用户表情行为', () => {
+        const raw = '<think>不能展示的思考</think>[2026-07-11 17:25] [你 发送了表情包: 我来搞定][2026-07-11 17:25] [聊天] 我去工具箱看看。\n</think>';
+        expect(sanitizeMcpLeadInText(raw)).toBe('我去工具箱看看。');
+    });
+});
+
+describe('MCP 聊天链路不悬挂', () => {
+    it('正文假调用已代执行后，组织回复请求移除 tools，避免空正文 tool_calls 被吞', () => {
+        const body = buildMcpTextFallbackBody(
+            { model: 'x', tools: [{ type: 'function' }], tool_choice: 'auto', temperature: 0.8 },
+            [{ role: 'user', content: '工具结果' }],
+        );
+        expect(body.tools).toBeUndefined();
+        expect(body.tool_choice).toBeUndefined();
+        expect(body.model).toBe('x');
+        expect(body.temperature).toBe(0.8);
+        expect(body.messages).toEqual([{ role: 'user', content: '工具结果' }]);
+    });
+
+    it('只把中转拒绝请求的常见 4xx 识别为无 tools 重试条件', () => {
+        expect(shouldRetryMcpWithoutTools(new Error('API Error 401: Unauthorized'))).toBe(true);
+        expect(shouldRetryMcpWithoutTools(new Error('HTTP 422 INVALID_ARGUMENT'))).toBe(true);
+        expect(shouldRetryMcpWithoutTools(new Error('API Error 429: rate limited'))).toBe(false);
+        expect(shouldRetryMcpWithoutTools(new Error('API Error 500'))).toBe(false);
+    });
+
+    it('tools 被拒绝的降级请求会携带真实工具参数说明，但不再发送 tools 字段', () => {
+        const body = buildMcpRejectedToolsFallbackBody({
+            messages: [{ role: 'user', content: '查仓库' }],
+            tools: [{ type: 'function', function: {
+                name: 'ask_question',
+                description: '[DeepWiki] 查询 GitHub 仓库文档',
+                parameters: {
+                    type: 'object',
+                    properties: { repoName: { type: 'string' }, question: { type: 'string' } },
+                    required: ['repoName', 'question'],
+                },
+            } }],
+            tool_choice: 'auto',
+        });
+        expect(body.tools).toBeUndefined();
+        expect(body.tool_choice).toBeUndefined();
+        expect(body.messages.at(-1).content).toContain('ask_question(repoName*:string, question*:string)');
+        expect(body.messages.at(-1).content).toContain('[DeepWiki] 查询 GitHub 仓库文档');
+    });
+
+    it('远端 MCP 请求不结束时会超时返回失败，不会永久占住 isTyping', async () => {
+        vi.useFakeTimers();
+        const server = mkServer({ id: 'timeout-server' });
+        vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+            const req = JSON.parse(String(init?.body || '{}'));
+            if (req.method === 'initialize') {
+                return Promise.resolve(new Response(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: {} }), {
+                    status: 200, headers: { 'Content-Type': 'application/json' },
+                }));
+            }
+            if (req.method === 'notifications/initialized') {
+                return Promise.resolve(new Response('', { status: 202 }));
+            }
+            // 模拟最容易漏掉的悬挂：响应头已经回来，但 SSE body 永远不结束。
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+                text: () => new Promise((_resolve, reject) => {
+                    init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+                }),
+            } as Response);
+        });
+
+        const pending = callMcpTool(server, 'search', { q: 'react' });
+        await vi.advanceTimersByTimeAsync(MCP_REQUEST_TIMEOUT_MS);
+        await expect(pending).resolves.toMatchObject({ success: false, error: expect.stringContaining('MCP 请求超时') });
+    });
+
+    it('SSE 收到当前 JSON-RPC 结果后立即返回，不等待服务器关闭长连接', async () => {
+        const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+        const server = mkServer({ id: 'open-sse-server' });
+        vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+            const req = JSON.parse(String(init?.body || '{}'));
+            if (req.method === 'initialize') {
+                return Promise.resolve(new Response(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: {} }), {
+                    status: 200, headers: { 'Content-Type': 'application/json' },
+                }));
+            }
+            if (req.method === 'notifications/initialized') {
+                return Promise.resolve(new Response('', { status: 202 }));
+            }
+            const payload = JSON.stringify({
+                jsonrpc: '2.0', id: req.id,
+                result: { content: [{ type: 'text', text: 'React 是一个 UI 库' }] },
+            });
+            const stream = new ReadableStream({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode(`event: message\ndata: ${payload}\n\n`));
+                    // 故意不 close：模拟 Streamable HTTP 保持 SSE 长连接。
+                },
+            });
+            return Promise.resolve(new Response(stream, {
+                status: 200, headers: { 'Content-Type': 'text/event-stream' },
+            }));
+        });
+
+        await expect(callMcpTool(server, 'ask_question', { repoName: 'facebook/react' }))
+            .resolves.toMatchObject({ success: true, data: 'React 是一个 UI 库' });
+        expect(info).toHaveBeenCalledWith('🔌 [MCP] tools/call 完成', expect.objectContaining({
+            server: server.name,
+            tool: 'ask_question',
+            args: { repoName: 'facebook/react' },
+            success: true,
+            result: '"React 是一个 UI 库"',
+        }));
     });
 });

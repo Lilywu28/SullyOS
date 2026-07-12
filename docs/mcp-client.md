@@ -4,14 +4,23 @@
 > 这份文档讲的是**通用** MCP 客户端；小红书/麦当劳/瑞幸那三个写死的客户端不归这里管
 > （它们分别在 `utils/xhsMcpClient.ts` / `mcdMcpClient.ts` / `luckinMcpClient.ts`）。
 
+> 面向用户（和用户的 AI 助手）的自包含接入教程在 [`docs/mcp-user-guide.md`](./mcp-user-guide.md)，
+> 设置里 MCP 板块的「?」帮助弹窗一键跳转/复制的就是它——改接入行为时记得同步更新。
+
 ## 用户视角
 
-设置 → 「MCP 工具服务器」卡片：
+设置 → 「MCP 工具服务器」板块（标「高级玩法」，独立于实时感知）→「配置」弹窗：
 
 1. 「+ 添加」→ 填名称和服务器 URL（如 `https://mcp.example.com/mcp`）
 2. 服务器要鉴权就填 Bearer Token
 3. 点「测试连接」→ 客户端走 MCP 握手 + `tools/list`，工具清单持久化到本机
 4. 打开开关 → 聊天里角色就能调这些工具
+5. 「可用角色」默认通用（所有角色）；点角色名可把服务器绑定给指定角色
+   （典型场景：记忆库只交给一个角色，别的角色看不到这批工具）
+
+「聊天模型支持工具调用」默认开启。若你明确知道当前模型或中转不支持 OpenAI
+function calling（例如携带 `tools` 就报 401），关闭它后首轮会直接走文字兼容模式，
+不再先发送一次 `tools` 探测请求；即使保持开启，遇到常见 4xx 仍会自动降级一次。
 
 ### 连不上？三种网络路径
 
@@ -33,7 +42,7 @@
 |------|------|
 | 协议客户端（握手/session/tools·list/call）+ 配置存储 | `utils/mcpClient.ts` |
 | OpenAI 工具格式转换、跨服务器重名、系统提示块 | `utils/mcpToolBridge.ts` |
-| 设置卡片 | `apps/Settings.tsx` 的 `McpServersCard` |
+| 设置板块（section + 配置/帮助弹窗） | `apps/Settings.tsx` 的 `McpServersCard`、`MCP_USER_GUIDE_URL` |
 | systemPrompt 注入（9d 段）+ `mcpChatActive` flag + 尾部 reminder | `utils/chatRequestPayload.ts` |
 | tools 注入 + 客户端工具循环（与瑞幸共用骨架） | `hooks/useChatAI.ts` |
 | 备份导出/导入 | `utils/db.ts`（`mcpLocal` 段）+ `types.ts` `FullBackupData.mcpLocal` |
@@ -66,6 +75,10 @@
   （服务器重启后 `Mcp-Session-Id` 作废是常态）。
 - **配置改动要 `resetMcpSession`**：URL/token/代理任一变了旧 session 就不能用，
   设置卡片的 `update()` 已处理。
+- **角色绑定在 `getEnabledMcpServers(charId)` 一处收口**。`charIds` 空/缺省 =
+  通用；非空只对绑定角色可见。`buildMcpOpenAITools` / `buildMcpSystemBlock` /
+  `isMcpChatAvailable` 都接 charId 透传给它，聊天路径必须传 `char.id`；
+  **charId 缺省时绑定服务器一律不可见**（防止无角色上下文的调用点泄漏专属工具）。
 
 ## 排查「角色把工具调用输出成文字」
 
@@ -81,4 +94,5 @@
   传输，也不支持本地 stdio 服务器（那种请套 mcp-proxy 或自行起 HTTP 端）。
 - 只用了 MCP 的 tools 能力；resources / prompts / OAuth 授权流未实现
   （要接 OAuth 服务器，目前先在 Token 框里贴手动申请的 token）。
-- 工具结果回填循环时截断 1500 字符（与瑞幸一致），超长结果考虑让服务器端分页。
+- 工具结果回填上限 20000 字符（`formatMcpToolResult`，正常使用等于不截断，
+  只防病态超长结果炸上下文；被截断时会标注全文长度）。瑞幸自己的工具仍是 1500。

@@ -314,9 +314,9 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
 
     // ── 9d. 通用 MCP 工具模式 (用户自配的远程 MCP 服务器, 见 docs/mcp-client.md) ──
     // 只要有启用且已发现工具的服务器就常开，不像瑞幸靠关键词激活。
-    const mcpChatActive = isMcpChatAvailable();
+    const mcpChatActive = isMcpChatAvailable(char.id);
     if (mcpChatActive) {
-        const block = buildMcpSystemBlock(userProfile?.name || '用户');
+        const block = buildMcpSystemBlock(userProfile?.name || '用户', char.id);
         if (block) {
             systemPrompt += block;
         }

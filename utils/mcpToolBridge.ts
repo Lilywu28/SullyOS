@@ -34,11 +34,13 @@ const serverSlug = (server: McpServerConfig): string =>
 /**
  * 聚合启用服务器的工具，返回 OpenAI 工具数组 + 暴露名→真实工具 的映射。
  * 暴露名默认用工具原名（sanitize 后）；跨服务器重名时后者加 <服务器名>_ 前缀。
+ * charId：只聚合对该角色可见的服务器（通用 + 绑定了该角色的）。
  */
-export const buildMcpOpenAITools = (): { tools: OpenAIMcpTool[]; resolve: Map<string, ResolvedMcpTool> } => {
+export const buildMcpOpenAITools = (charId?: string): { tools: OpenAIMcpTool[]; resolve: Map<string, ResolvedMcpTool> } => {
     const tools: OpenAIMcpTool[] = [];
     const resolve = new Map<string, ResolvedMcpTool>();
-    for (const server of getEnabledMcpServers()) {
+    const servers = getEnabledMcpServers(charId);
+    for (const server of servers) {
         for (const t of server.tools || []) {
             let exposed = sanitizeToolName(t.name);
             if (resolve.has(exposed)) {
@@ -51,7 +53,7 @@ export const buildMcpOpenAITools = (): { tools: OpenAIMcpTool[]; resolve: Map<st
                 type: 'function',
                 function: {
                     name: exposed,
-                    description: buildToolDescription(server, t),
+                    description: buildToolDescription(server, t, servers.length > 1),
                     parameters: t.inputSchema || { type: 'object', properties: {} },
                 },
             });
@@ -60,11 +62,27 @@ export const buildMcpOpenAITools = (): { tools: OpenAIMcpTool[]; resolve: Map<st
     return { tools, resolve };
 };
 
-const buildToolDescription = (server: McpServerConfig, t: McpToolDef): string => {
+const buildToolDescription = (server: McpServerConfig, t: McpToolDef, multi: boolean): string => {
     const desc = (t.description || '').trim();
     // 多服务器时在描述里带上来源，帮模型区分同类工具
-    const multi = getEnabledMcpServers().length > 1;
     return multi ? `[${server.name}] ${desc}` : desc;
+};
+
+// ========== 工具结果回填 ==========
+
+/**
+ * MCP 结果（记忆检索、网页抓取等）体量远超瑞幸商品列表，1500 字符会把一条
+ * 完整结果拦腰截断。上限放到 20000 只防病态超长结果炸上下文——工具循环每轮
+ * 会全量重发消息，真有兆级 JSON 混进来会直接 4xx 或 token 起飞。
+ */
+export const MCP_RESULT_MAX_CHARS = 20000;
+
+export const formatMcpToolResult = (data: any): string => {
+    let s: string;
+    try { s = typeof data === 'string' ? data : JSON.stringify(data); } catch { s = String(data); }
+    return s.length > MCP_RESULT_MAX_CHARS
+        ? `${s.slice(0, MCP_RESULT_MAX_CHARS)}…[结果过长已截断, 全文共 ${s.length} 字符]`
+        : s;
 };
 
 // ========== 提示词 ==========
@@ -72,9 +90,10 @@ const buildToolDescription = (server: McpServerConfig, t: McpToolDef): string =>
 /**
  * MCP 工具模式的 systemPrompt 说明块。
  * 与瑞幸不同：这里的工具是用户自配的、内容未知，所以只讲纪律，不讲业务流程。
+ * charId：只列对该角色可见的服务器，与 buildMcpOpenAITools 的过滤保持一致。
  */
-export const buildMcpSystemBlock = (userName: string = '用户'): string => {
-    const servers = getEnabledMcpServers();
+export const buildMcpSystemBlock = (userName: string = '用户', charId?: string): string => {
+    const servers = getEnabledMcpServers(charId);
     if (!servers.length) return '';
     const lines = servers.map(s => {
         const names = (s.tools || []).map(t => t.name).join('、');
@@ -120,6 +139,67 @@ export interface FakedMcpCall {
     args: Record<string, any>;
     matched: string;
 }
+
+/** 从正文兼容调用中剥掉调用语法，只留下可以先展示给用户的角色文字。 */
+export const stripTextFakedMcpCalls = (content: string, calls: FakedMcpCall[]): string => {
+    let cleaned = content;
+    for (const call of calls) cleaned = cleaned.split(call.matched).join('');
+    return cleaned.replace(/\n{3,}/g, '\n\n').trim();
+};
+
+/**
+ * MCP 工具前置气泡专用粗洗。该气泡在统一后处理之前落库，必须自行清掉模型
+ * 复刻的历史外壳和思考标签；不能把“用户发送了表情包”反向变成角色消息。
+ */
+export const sanitizeMcpLeadInText = (raw: string): string => {
+    let cleaned = raw || '';
+    cleaned = cleaned.replace(/<(think|thinking|thought)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
+    cleaned = cleaned.replace(/<(?:think|thinking|thought)\b[^>]*>[\s\S]*$/gi, '');
+    cleaned = cleaned.replace(/<\/?(?:think|thinking|thought)\b[^>]*>/gi, '');
+    cleaned = cleaned.replace(/\[(?:你|User|用户|System)\s*发送了表情包[:：]\s*.*?\]/gi, '');
+    cleaned = cleaned.replace(/\[\d{4}[-/年]\d{1,2}[-/月]\d{1,2}[^\]]*\]/g, '');
+    cleaned = cleaned.replace(/\s*\[(?:聊天|通话|约会)\]\s*/g, '\n');
+    return cleaned.replace(/\n{3,}/g, '\n\n').trim();
+};
+
+/**
+ * 正文假调用已经由客户端代为执行，下一跳只负责把结果组织成角色回复。
+ * 这里必须移除 tools；否则部分中转会在这一跳改走正规 tool_calls，返回空正文，
+ * 而正规工具循环阶段已经结束，最终表现就是角色一直打字后不落消息。
+ * 不支持 FC 的模型仍可继续输出正文假调用，并由同一兜底循环处理多步任务。
+ */
+export const buildMcpTextFallbackBody = (baseReqBody: any, messages: any[]): any => {
+    const followBody = { ...baseReqBody, messages };
+    delete followBody.tools;
+    delete followBody.tool_choice;
+    return followBody;
+};
+
+/** tools 被中转拒绝时，把最小 schema 仅作为本轮兼容说明交给正文调用兜底。 */
+export const buildMcpRejectedToolsFallbackBody = (baseReqBody: any): any => {
+    const followBody = buildMcpTextFallbackBody(baseReqBody, baseReqBody.messages || []);
+    const signatures = (baseReqBody.tools || []).map((tool: any) => {
+        const fn = tool?.function || {};
+        const schema = fn.parameters || {};
+        const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+        const args = Object.entries(schema.properties || {}).map(([name, def]: [string, any]) =>
+            `${name}${required.has(name) ? '*' : ''}:${def?.type || 'any'}`,
+        );
+        const description = typeof fn.description === 'string' ? fn.description.trim() : '';
+        return `- ${fn.name}(${args.join(', ')})${description ? `：${description}` : ''}`;
+    }).filter(Boolean);
+    followBody.messages = [...followBody.messages, {
+        role: 'system',
+        content: `[MCP 兼容模式：当前 API 中转拒绝 function calling 参数。必须根据下方工具的来源、描述和参数选择真正匹配用户意图的工具，禁止因为名字看起来通用就乱选。本轮如果需要工具，请只输出一行 tool_name({"参数":"值"})，系统会代为执行后把结果给你；没有收到系统返回前不要声称工具已经成功，也不要自行编造结果。* 表示必填参数。\n${signatures.join('\n')}]`,
+    }];
+    return followBody;
+};
+
+/** 部分 OpenAI 兼容中转不是忽略 tools，而是直接用 4xx 拒绝整次请求。 */
+export const shouldRetryMcpWithoutTools = (error: unknown): boolean => {
+    const message = error instanceof Error ? error.message : String(error || '');
+    return /(?:^|\D)(?:400|401|403|422)(?:\D|$)/.test(message);
+};
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
