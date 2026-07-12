@@ -99,3 +99,107 @@ AI 算错的兜底手段。
 | `utils/trpgRuleSystems.ts` | `RuleSystemDef.checkInstruction`、`CheckTier`/`CHECK_TIER_LABELS`、`computeCheckTier`（机械五档计算）、`findSkillValueByName`（技能名模糊匹配）、`toCocPercentile`（骰子归一化） |
 | `apps/GameApp.tsx` | `handleAction`（全员先骰、prompt 拼接、`checks[]` 解析+机械复核+throw）、`handleReroll`（复核失败后用户手动重骰的入口）、`DICE_TIER_BADGE_STYLE`/`diceTierBadgeClass`（UI 徽章） |
 | `types.ts` | `GameLog.diceRoll`：`result/max/check/tier/success/outcome` |
+
+## 逐人 HP/SAN、死亡/昏迷/疯狂、皮下吐槽（OOC）
+
+在上面「全员先骰 + 五档检定」的基础上又加了三块：逐人状态面板、死亡/出局机制、可选的场外
+吐槽频道。**功能1+2 不新增任何 LLM 调用**（复用检定用的同一次主线响应，改的是输出 schema），
+**功能3（OOC）新增调用，且是异步、可关、完全跟主线隔离的**——为了防止多角色记忆串台，OOC
+不是"新增 1 次"而是**给每个参战角色各自新增 1 次独立调用**（并发执行，不线性拖慢），详见下方
+「皮下吐槽（OOC）：逐角色独立调用」一节。改这部分逻辑前必读。
+
+### 数据结构（`types.ts`）
+
+- `GameSession.characterVitals?: Record<string, {health, sanity}>`——逐人血条/理智值，key 是
+  角色 `id`，玩家本人用固定 key `'__player__'`。旧存档没有这个字段时，`getCharacterVitals`
+  （`utils/trpgRuleSystems.ts`）用旧的全局 `status.health/sanity` 给每个人现算一份兜底初始值，
+  数值上等价于"迁移前大家共享一份血条"的行为，不会因为缺字段崩溃。
+- `GameSession.deadCharIds?: string[]`——死亡角色的永久名单（数组存，不用 `Set`，因为要序列化
+  进 IndexedDB）。一旦进了这个名单，`handleAction` 顶部的 `players` 过滤会把这个角色**整个从
+  冒险小队名单、骰点、prompt 里踢出去**，不再登场，且不可逆——即使后续被"复活"叙事也不会
+  自动移出，这是有意的简化（没做复活机制）。
+- `GameSession.oocEnabled?: boolean`——皮下吐槽开关，默认 `false`（关）。
+- `GameSession.oocLogs?: Array<{id, charId, speakerName, content, timestamp}>`——OOC 消息记录，
+  跟主线 `logs` 完全分开存，**永远不会被拼进主线 prompt**（`handleAction` 里的 prompt 只读
+  `activeGame.logs`/`summaries`，不读 `oocLogs`）。
+
+### 死亡/昏迷/疯狂：纯代码阈值，不问 AI
+
+`utils/trpgRuleSystems.ts` 里的 `computeVitalState(health, isDead)` / `computeSanState(sanity)`
+是纯函数，输入是"当前数值 + 是否已死亡"，输出五档标签，不涉及 AI 判断：
+
+- **HP**：`normal`(>50) → `wounded`(≤50) → `critical`(≤30) → `unconscious`(≤0，昏迷不是死)
+  → `dead`（由 `isDead` 参数显式传入，不能只看数值反推——角色可能被治疗回满血，但死亡不可逆）。
+- **SAN**：`stable`(>50) → `unsettled`(≤50) → `unstable`(≤30) → `broken`(≤0，疯狂但不出局)。
+
+**两段式死亡规则**（`handleAction` 里解析 `res.statusChanges` 那一段）：HP 归零只是**昏迷**，
+角色留在名单里但不能自主行动/被骰点；昏迷状态下如果又挨了一次 `hpChange < 0`，代码判定为
+**当场死亡**，塞进 `newlyDeadIds` 再并进 `deadCharIds`。这一步是纯代码计算（"HP≤0 且又扣血"
+是确定性条件），跟检定成败那种需要跟 AI 结果比对复核的机制不一样——这里没有"AI 猜错了"
+需要 `throw` 的环节，因为 AI 只负责给 `hpChange` 这个数字，"这个数字落在哪个桶"是代码说了算。
+
+SAN 归零（`broken`/疯狂）**不会**触发出局或重启——这是对旧版本"SAN 归零就强制重启整局"的
+修正，疯狂只是让 prompt 里多一句"这个人描写要失控/诡异"的提示，人还在场上。
+
+### 主线 prompt/输出改动（跟检定机制平行的范式）
+
+- prompt 的"队伍资源"从一整块共享血条，改成逐人列出 `HP x% / SAN x%`（`vitalsLines`），
+  金币/物品继续队伍共享（没有做逐人拆分，跑团分赃本来就是共享惯例）。
+- 输出 JSON 新增 `statusChanges[]`，取代旧的全局 `hpChange`/`sanityChange`：
+  ```json
+  "statusChanges": [
+    { "charId": "__player__ 或角色ID", "hpChange": 0, "sanityChange": 0 }
+  ]
+  ```
+  跟 `checks[]` 同一套哲学——**没变化的人不用出现**，不用为每个人都硬凑一条。
+- 已昏迷的人：prompt 明确告知 AI 不要在 `characters[]` 里给 TA 安排新的主动行为；已疯狂的人：
+  提示"言行要失控/诡异，但不是消失"。
+- 玩家本人死亡/昏迷时（`playerCanAct === false`），局内输入框整体换成一句旁观提示（`Eye` 图标），
+  不能再发主线行动——但如果开了皮下吐槽，仍能在那边继续参与。
+
+### 逐人状态面板 UI
+
+Party HUD（局内头部可展开的头像条）里，玩家自己的头像和每个队友头像都是可点的，点开弹出
+跟原来"只有玩家自己那份"一样的 HP/SAN Modal（`statusPanelCharId` 状态控制），额外带上
+`computeVitalState`/`computeSanState` 算出的中文状态标签。头像角标颜色也随状态变化（绿→黄→红
+→灰昏迷→黑骷髅死亡），复用同一个 `vitalStatusDot(health, isDead)` helper。顶部 Stats HUD
+（原来只显示玩家 `status.health/sanity`）现在显示的是 `characterVitals.__player__`（`newStatus.health/sanity`
+在 `handleAction` 里会同步成玩家本人的最新值，保留这两个旧字段只是为了旧 UI/存档兜底读取，
+不再是权威数据源）。
+
+### 皮下吐槽（OOC）：逐角色独立调用
+
+- **触发时机**：`handleAction` 主线回合落库成功后，`runOocIfNeeded(finalGame)` **不 await**
+  地异步触发——绝不阻塞、绝不拖慢主线的响应速度，失败也只是 `console.warn`，不会读出 toast
+  打扰用户或影响本回合已经落库的结果。
+- **只有 `oocEnabled` 为真才会调用**，默认关，入口在系统菜单里一个跟骰子开关同款样式的
+  toggle。
+- **逐角色独立生成（防串台）**：不再用一次 LLM 调用生成所有人的话——那样每个人的记忆/人设会混在
+  同一份 prompt 里，极易把 A 的记忆安到 B 头上。改成**每个角色单独调用一次**（`Promise.all` 并发，
+  不线性拖慢），复用 `buildSyncContext([c])` 拿到该角色自己完整的人设+私聊神经链接+记忆宫殿召回，
+  互不可见对方细节。代价：这一批内角色互相看不到"对方这一轮刚说的话"（只能看到上一轮及之前的
+  `oocLogs`），只能事后接话。**玩家不进入这个生成循环**——AI 不代替真人发言，玩家只能通过
+  `handleOocSend` 手动发言。
+- **输入**（每个角色各自拿到的）：该角色自己的完整人设+私聊神经链接+记忆宫殿召回（`buildSyncContext([c])`）
+  + 最近几条主线 `logs`（仅供吐槽参考）+ 最近的 `oocLogs` 历史（上一轮及之前）+ 最近的判定结果
+  （`recentRolls`）。**输出只喂给这一次调用，绝不会被拼回下一次主线 prompt**——这是"不污染剧情"
+  的关键，`handleAction` 的 prompt 构建代码里完全不读 `oocLogs`。
+- **输出格式**（每个角色各自返回）：
+  ```json
+  { "speak": true, "content": "吐槽内容（speak 为 false 时可以留空）" }
+  ```
+  不是每次都要开口——如果这几回合很平淡，没什么好说的，可以选择不说话（`speak: false`）。
+- **UI 形式是独立全屏聊天室视图**（`playSubView: 'chatroom'` 状态切换，跟主线剧情并列的全屏视图，
+  不是弹窗），头部有「剧情 / 聊天室」pill 切换按钮，不是挂在每条主线气泡下面——独立视图能让已经
+  出局的人持续"看戏吐槽"，这正是这个功能的核心诉求（用户原话：出局后仍能"旁观、吐槽游戏走向、
+  坑队友"）。
+- 用户自己发 OOC 消息（聊天室底部输入框）**不调用 LLM**，本地直接 `append` 进 `oocLogs`，
+  `charId` 固定为 `'__player__'`（仅用于气泡右对齐和高亮，不会被当成角色加入 AI 生成循环）。
+
+### 关键文件（新增/涉及部分）
+
+| 文件 | 职责 |
+|------|------|
+| `utils/trpgRuleSystems.ts` | `VitalState`/`SanState`、`computeVitalState`/`computeSanState`（纯阈值函数）、`VITAL_STATE_LABELS`/`SAN_STATE_LABELS`、`getCharacterVitals`（旧档兜底） |
+| `types.ts` | `GameSession.characterVitals`/`deadCharIds`/`oocEnabled`/`oocLogs` |
+| `apps/GameApp.tsx` | `handleAction` 里的逐人 prompt 拼接 + `statusChanges[]` 解析 + 死亡判定；`runOocIfNeeded`/`handleOocSend`/`toggleOoc`；逐人状态 Modal（`statusPanelCharId`）+ OOC 面板 Modal（`showOocPanel`）；输入框按 `playerCanAct` 切换旁观提示 |

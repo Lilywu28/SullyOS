@@ -2976,6 +2976,24 @@ export interface GameSession {
     // 自由叙事专属：AI 按本场世界观原创的"特殊技能"定义（基础技能是固定通用列表，见 utils/trpgRuleSystems.ts FREEFORM_BASIC_SKILLS）。
     // 与 characterSheets 配套使用，用于渲染技能名 + 喂给 GM prompt。
     freeformSpecialSkills?: Array<{ key: string; label: string }>;
+    // 逐人 HP/SAN（key 为 charId，玩家本人用 '__player__'）。旧存档没有这个字段时，
+    // 用 status.health/sanity 给每个人现算一份兜底初始值（见 utils/trpgRuleSystems.ts getCharacterVitals）。
+    characterVitals?: Record<string, { health: number; sanity: number }>;
+    // 死亡角色的 charId 集合：一旦死亡永久移出后续队伍名单与骰点，不再登场（用数组存，Set 不便序列化进 IndexedDB）。
+    deadCharIds?: string[];
+    // 皮下吐槽：默认关闭。开启后主线回合结束会额外单独调一次 LLM 生成场外吐槽，写进 oocLogs，
+    // 完全不进主线 prompt/context，用于死亡/旁观角色也能继续参与吐槽游戏走向。
+    oocEnabled?: boolean;
+    oocLogs?: Array<{
+        id: string;
+        charId: string;       // '__player__' 或角色 id；死亡/昏迷角色也可以发
+        speakerName: string;
+        content: string;
+        timestamp: number;
+    }>;
+    // oocLogs 里已经推送进角色记忆/聊天的条数（高水位游标，不是"归档"标记——聊天室内容本身不折叠/不进主线归档）。
+    // 自动归档模式下每次自动总结都会顺带推一批未推送的原文过去；手动模式下攒到「归档记忆并退出」时一次性带走。
+    oocPushedCount?: number;
     suggestedActions?: GameActionOption[];
     summaries?: GameSummary[];   // 自动总结归档的前情提要
     createdAt: number;

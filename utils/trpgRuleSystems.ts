@@ -312,6 +312,56 @@ export const findSkillValueByName = (
     return undefined;
 };
 
+// --- 逐人生命/理智状态（昏迷/死亡/疯狂）：纯代码阈值判定，不问 AI ---
+// hpChange/sanityChange 的数值本身是 AI 给的，但"到了这个数算什么状态"是确定性 bucketing，
+// 不存在"AI 算错了"需要复核这一步（不同于 checks[] 的成败判定，那个才需要机械复核）。
+
+export type VitalState = 'normal' | 'wounded' | 'critical' | 'unconscious' | 'dead';
+export type SanState = 'stable' | 'unsettled' | 'unstable' | 'broken';
+
+export const VITAL_STATE_LABELS: Record<VitalState, string> = {
+    normal: '正常',
+    wounded: '轻伤',
+    critical: '重伤',
+    unconscious: '昏迷',
+    dead: '死亡',
+};
+
+export const SAN_STATE_LABELS: Record<SanState, string> = {
+    stable: '稳定',
+    unsettled: '不安',
+    unstable: '动摇',
+    broken: '疯狂',
+};
+
+// isDead: 由调用方传入——是否已经被标记为死亡（GameSession.deadCharIds），死亡是永久状态，
+// 不能仅凭 health 数值反推（角色可能后来被治疗回满，但死亡不可逆）。
+export const computeVitalState = (health: number, isDead: boolean): VitalState => {
+    if (isDead) return 'dead';
+    if (health <= 0) return 'unconscious';
+    if (health <= 30) return 'critical';
+    if (health <= 50) return 'wounded';
+    return 'normal';
+};
+
+export const computeSanState = (sanity: number): SanState => {
+    if (sanity <= 0) return 'broken';
+    if (sanity <= 30) return 'unstable';
+    if (sanity <= 50) return 'unsettled';
+    return 'stable';
+};
+
+// 旧存档兜底：没有 characterVitals 字段时，用全局 status.health/sanity 给每个人现算一份初始值，
+// 保证老存档打开时不会因为缺字段而崩，且数值上等价于"迁移前的行为"（大家共享同一份血条）。
+export const getCharacterVitals = (
+    charId: string,
+    characterVitals: Record<string, { health: number; sanity: number }> | undefined,
+    fallbackHealth: number,
+    fallbackSanity: number,
+): { health: number; sanity: number } => {
+    return characterVitals?.[charId] ?? { health: fallbackHealth, sanity: fallbackSanity };
+};
+
 // --- 角色数值表（方案B）：按本场剧本单独生成，交给 LLM 参考角色设定+长期记忆安排 ---
 // CharacterSheetEntry 定义见 types.ts（GameSession.characterSheets 用的是同一个类型）
 
