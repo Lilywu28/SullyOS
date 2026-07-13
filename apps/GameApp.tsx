@@ -915,6 +915,18 @@ ${playerContext}
         addToast(newEnabled ? '已开启皮下吐槽（每回合结束会给每个角色各自单独调一次 LLM，不进主线）' : '已关闭皮下吐槽', 'info');
     };
 
+    // 顶栏"聊天室"胶囊常驻显示后，第一次点进来时顺手开启功能，不用先去系统菜单摸开关
+    const handleGoToChatroom = async () => {
+        if (!activeGame) return;
+        if (!activeGame.oocEnabled) {
+            const updated = { ...activeGame, oocEnabled: true };
+            setActiveGame(updated);
+            await DB.saveGame(updated);
+            addToast('已开启皮下吐槽（每回合结束会给每个角色各自单独调一次 LLM，不进主线）', 'info');
+        }
+        setPlaySubView('chatroom');
+    };
+
     const toggleOocCallMode = async () => {
         if (!activeGame) return;
         const newMode: 'individual' | 'batch' = (activeGame.oocCallMode || 'individual') === 'individual' ? 'batch' : 'individual';
@@ -1287,8 +1299,7 @@ ${recentOoc}
                 currentRoll = rollDice(diceCfg);
                 setLastRoll(currentRoll);
                 partyRolls = players.filter(p => getVitals(p.id).health > 0).map(p => ({ id: p.id, name: p.name, roll: rollDice(diceCfg) }));
-                const rollSummary = [`${userProfile.name}:${currentRoll}`, ...partyRolls.map(r => `${r.name}:${r.roll}`)].join(' / ');
-                addToast(`${diceCfg.label} 判定 → ${rollSummary}`, 'info');
+                addToast('全员已骰点，GM 正在推演...', 'info');
             }
 
             // Standard Action: Append user log
@@ -1556,11 +1567,13 @@ ${buildGmStyleSection(dmStyle)}
                     });
                 }
 
+                const narratedCharIds = new Set<string>();
                 if (Array.isArray(res.characters)) {
                     for (const charAct of res.characters) {
                         // 优先用 id 精确匹配，name 匹配仅兜底
                         const char = players.find(p => p.id === charAct.charId) || players.find(p => p.name === charAct.charId);
                         if (char) {
+                            narratedCharIds.add(char.id);
                             const combinedContent = `*${charAct.action || ''}* \n"${charAct.dialogue || ''}"`;
                             const check = checkByCharId[char.id];
                             const roll = rollByCharId[char.id];
@@ -1578,6 +1591,24 @@ ${buildGmStyleSection(dmStyle)}
                             });
                         }
                     }
+                }
+                // 兜底：AI 有时会把某个队友的骰点判定塞进 checks[]，却忘了把 TA 也放进 characters[] 里叙述——
+                // 这种情况下判定结果原本无处安放，直接消失。这里给漏掉的人补一条"沉默判定"记录，至少骰点+徽章还在。
+                for (const charId of Object.keys(checkByCharId)) {
+                    if (charId === '__player__' || narratedCharIds.has(charId)) continue;
+                    const char = players.find(p => p.id === charId);
+                    if (!char) continue;
+                    const check = checkByCharId[charId];
+                    const roll = rollByCharId[charId];
+                    if (roll === undefined) continue;
+                    newLogs.push({
+                        id: `char-${Date.now()}-${Math.random()}`,
+                        role: 'character',
+                        speakerName: char.name,
+                        content: `*沉默地完成了这次判定*`,
+                        timestamp: Date.now(),
+                        diceRoll: { result: roll, max: diceCfg.count * diceCfg.sides, check: check.skill, success: check.success, outcome: check.outcome, tier: check.tier }
+                    });
                 }
 
                 // 玩家本人这回合如果被采纳为一次正式检定，把技能/成败信息补回刚才已经落库的那条 player log
@@ -2581,16 +2612,15 @@ ${logText}
                     >
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 0 0 3.741-.479 3 3 0 0 0-4.682-2.72m.94 3.198.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0 1 12 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 0 1 6 18.719m12 0a5.971 5.971 0 0 0-.941-3.197m0 0A5.995 5.995 0 0 0 12 12.75a5.995 5.995 0 0 0-5.058 2.772m0 0a3 3 0 0 0-4.681 2.72 8.986 8.986 0 0 0 3.74.477m.94-3.197a5.971 5.971 0 0 0-.94 3.197M15 6.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm6 3a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Zm-13.5 0a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Z" /></svg>
                     </button>
-                    {/* 剧情/聊天室切换：不是小功能入口，是跟主线并列的全屏视图切换。聊天室=皮下吐槽 */}
-                    {activeGame.oocEnabled && (
-                        <div className={`flex items-center rounded-full border ${theme.border} bg-black/20 p-0.5 text-[10px] font-bold mr-1`}>
-                            <button onClick={() => setPlaySubView('game')} className={`px-3 py-1.5 rounded-full transition-all active:scale-95 ${playSubView === 'game' ? `bg-white/10 ${theme.accent}` : 'opacity-60 hover:opacity-90'}`}>剧情</button>
-                            <button onClick={() => setPlaySubView('chatroom')} className={`relative px-3 py-1.5 rounded-full transition-all active:scale-95 flex items-center gap-1 ${playSubView === 'chatroom' ? `bg-white/10 ${theme.accent}` : 'opacity-60 hover:opacity-90'}`} title="聊天室（皮下吐槽）">
-                                聊天室
-                                {isOocLoading && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>}
-                            </button>
-                        </div>
-                    )}
+                    {/* 剧情/聊天室切换：常驻显示，不再靠 oocEnabled 隐藏——否则没开过的人根本发现不了这功能。
+                        没开启时点"聊天室"会顺手开启（进 handleGoToChatroom），开关的收纳入口挪进聊天室视图本身。 */}
+                    <div className={`flex items-center rounded-full border ${theme.border} bg-black/20 p-0.5 text-[10px] font-bold mr-1`}>
+                        <button onClick={() => setPlaySubView('game')} className={`px-3 py-1.5 rounded-full transition-all active:scale-95 ${playSubView === 'game' ? `bg-white/10 ${theme.accent}` : 'opacity-60 hover:opacity-90'}`}>剧情</button>
+                        <button onClick={handleGoToChatroom} className={`relative px-3 py-1.5 rounded-full transition-all active:scale-95 flex items-center gap-1 ${playSubView === 'chatroom' ? `bg-white/10 ${theme.accent}` : 'opacity-60 hover:opacity-90'}`} title="聊天室（皮下吐槽）">
+                            聊天室
+                            {isOocLoading && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>}
+                        </button>
+                    </div>
                     <button onClick={() => setShowSystemMenu(true)} className={`p-2 -mr-2 rounded hover:bg-white/10 active:scale-95 transition-transform`}>
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
                     </button>
@@ -2776,8 +2806,15 @@ ${logText}
             <div className={`h-full w-full relative flex flex-col ${theme.bg} ${theme.text} ${theme.font} transition-colors duration-500 overflow-hidden`}>
                 {renderTopBar()}
 
-                <div className={`px-4 py-2 border-b ${theme.border} bg-black/10 backdrop-blur-sm z-10 shrink-0 text-[10px] opacity-50 text-center`}>
-                    皮下吐槽 · 大家退出游戏状态后的真实闲聊，不进主线剧情
+                <div className={`px-4 py-2 border-b ${theme.border} bg-black/10 backdrop-blur-sm z-10 shrink-0 flex items-center justify-between gap-2`}>
+                    <span className="text-[10px] opacity-50 flex-1 text-center">皮下吐槽 · 大家退出游戏状态后的真实闲聊，不进主线剧情</span>
+                    <button
+                        onClick={async () => { await toggleOoc(); setPlaySubView('game'); }}
+                        className="text-[10px] px-2 py-1 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 transition-all shrink-0 opacity-70"
+                        title="关闭皮下吐槽功能，回到剧情视图"
+                    >
+                        关闭聊天室
+                    </button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
@@ -3221,7 +3258,7 @@ ${logText}
                         placeholder="你打算做什么..."
                         className={`flex-1 bg-black/20 border ${theme.border} rounded-xl px-3 py-3 outline-none text-sm placeholder-opacity-30 placeholder-current resize-none h-12 leading-tight focus:bg-black/40 transition-colors`}
                     />
-                    <button disabled={isTyping} onClick={() => handleAction(userInput)} className={`${theme.accent} font-bold text-sm px-4 h-12 bg-white/10 rounded-xl hover:bg-white/20 active:scale-95 transition-all flex items-center justify-center disabled:opacity-40`}>
+                    <button disabled={isTyping || !userInput.trim()} onClick={() => handleAction(userInput)} className={`${theme.accent} font-bold text-sm px-4 h-12 bg-white/10 rounded-xl hover:bg-white/20 active:scale-95 transition-all flex items-center justify-center disabled:opacity-40`}>
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg>
                     </button>
                 </div>
