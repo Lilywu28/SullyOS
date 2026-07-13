@@ -334,6 +334,7 @@ const GameApp: React.FC = () => {
     // 世界观 AI 辅助生成
     const [worldStyle, setWorldStyle] = useState<string>('高奇幻');
     const [worldIdea, setWorldIdea] = useState('');        // 用户额外给的灵感/想法（可选）
+    const [worldPacing, setWorldPacing] = useState<'crisis' | 'open'>('crisis'); // 叙事节奏：危机驱动 / 开放式冒险
     const [isGeneratingWorld, setIsGeneratingWorld] = useState(false);
     // 新游戏玩法设置
     const [newDiceDisabled, setNewDiceDisabled] = useState(false);            // 关闭骰子（默认每次直接成功）
@@ -571,15 +572,19 @@ ${recentLog}
         try {
             // [鲁棒性] 改用带分隔符的纯文本格式而非 JSON——即使被截断也能干净解析；
             // 不再限制字数，给足 token 防止半路砍断。
+            const pacingTask = worldPacing === 'open'
+                ? '<世界观正文。请写充分、生动，篇幅自由不设上限，包含：时代/地点背景与基调氛围、这个世界日常的运转方式与生活质感、登场角色（不预设人数与关系）的处境与动机、一两个可长期探索的悬念或势力。这是开放式冒险，不需要设置紧迫的核心危机，重点是让世界耐逛、经得起慢慢晃悠，不要写死结局。>'
+                : '<世界观正文。请写充分、生动，篇幅自由不设上限，包含：时代/地点背景与基调氛围、当前世界的核心矛盾或危机、登场角色（不预设人数与关系）的处境与初始目标钩子、一两个可探索的悬念或势力。留足玩家发挥空间，不要写死结局。>';
             const prompt = `你是一位资深的 TRPG（桌面跑团）剧本设计师。请按照指定风格，原创一个适合开团的世界观设定。
 **风格基调**: ${worldStyle}
+**叙事节奏**: ${worldPacing === 'open' ? '开放式冒险——不强求紧迫的核心危机，重点是世界本身好逛、细节扎实，节奏可以松散、生活化' : '危机驱动——世界当下有明确的核心矛盾或危机，作为冒险的主线张力'}
 ${worldIdea.trim() ? `**玩家的灵感/想法（请务必围绕它发挥）**: ${worldIdea.trim()}` : ''}
 
 请严格按下面的纯文本格式输出，**不要用 JSON，不要代码块，不要额外说明**：
 
 标题：<一个有吸引力的剧本标题>
 ===
-<世界观正文。请写充分、生动，篇幅自由不设上限，包含：时代/地点背景与基调氛围、当前世界的核心矛盾或危机、玩家小队的处境与初始目标钩子、一两个可探索的悬念或势力。留足玩家发挥空间，不要写死结局。>`;
+${pacingTask}`;
 
             const data = await fetchGameAPI(prompt, 6000);
             const raw = (extractContent(data) || '').trim();
@@ -2015,12 +2020,24 @@ ${logText}
                                 ))}
                             </div>
 
-                            {/* 额外灵感输入 (可选) */}
+                            {/* 叙事节奏：危机驱动 / 开放式冒险 */}
+                            <div className="grid grid-cols-2 gap-1.5 mb-3">
+                                <button
+                                    onClick={() => setWorldPacing('crisis')}
+                                    className={`px-2 py-1.5 rounded-lg text-[10px] font-medium border transition-all active:scale-95 ${worldPacing === 'crisis' ? 'bg-purple-500 text-white border-purple-400 shadow-lg shadow-purple-500/30' : 'bg-white/5 text-white/50 border-white/10 hover:bg-white/10'}`}
+                                >危机驱动</button>
+                                <button
+                                    onClick={() => setWorldPacing('open')}
+                                    className={`px-2 py-1.5 rounded-lg text-[10px] font-medium border transition-all active:scale-95 ${worldPacing === 'open' ? 'bg-purple-500 text-white border-purple-400 shadow-lg shadow-purple-500/30' : 'bg-white/5 text-white/50 border-white/10 hover:bg-white/10'}`}
+                                >开放式冒险</button>
+                            </div>
+
+                            {/* 额外灵感输入 (可选，开放式冒险下更需要具体设定) */}
                             <input
                                 value={worldIdea}
                                 onChange={e => setWorldIdea(e.target.value)}
                                 className="w-full bg-black/30 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white placeholder-white/25 focus:border-purple-400/60 outline-none transition-all mb-3"
-                                placeholder="再补充点想法？(可选，如：主角是失忆的赏金猎人)"
+                                placeholder={worldPacing === 'open' ? '开放式冒险建议写明具体设定，如：异世界日常、田园治愈生活' : '再补充点想法？(可选，如：主角是失忆的赏金猎人)'}
                             />
 
                             <button
