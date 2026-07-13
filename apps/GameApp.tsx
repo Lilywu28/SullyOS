@@ -6,6 +6,7 @@ import { GameSession, GameTheme, CharacterProfile, GameLog, GameActionOption, Ga
 import { ContextBuilder } from '../utils/context';
 import { extractContent, extractJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
+import { ChatParser } from '../utils/chatParser';
 import { RuleSystemId, DiceConfig, RULE_SYSTEMS, RULE_SYSTEM_LIST, DICE_PRESETS, DEFAULT_DICE_CONFIG, FREEFORM_BASIC_SKILLS, rollDice, rollFlavorFor, formatCharacterSheetsBlock, buildCharacterSheetPrompt, buildFreeformCharacterSheetPrompt, computeCheckTier, findSkillValueByName, CheckTier, CHECK_TIER_LABELS, getCharacterVitals, computeVitalState, computeSanState, VITAL_STATE_LABELS, SAN_STATE_LABELS, VitalState, SanState } from '../utils/trpgRuleSystems';
 import Modal from '../components/os/Modal';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
@@ -69,6 +70,104 @@ const AUTO_SUMMARY_THRESHOLD = 20;
 const KEEP_RECENT_AFTER_SUMMARY = 4;
 // AI 世界观生成的可选风格
 const WORLD_STYLES = ['高奇幻', '赛博朋克', '克苏鲁恐怖', '武侠江湖', '末世废土', '校园日常', '悬疑推理', '蒸汽朋克', '西部拓荒', '宫廷权谋'];
+
+// DM 风格：开团前选择的"主持人性格"，决定 GM 指令段落里冲突强度/失败代价/氛围基调怎么写。
+type DmStyle = 'default' | 'comedy' | 'horror' | 'romance';
+const DM_STYLE_META: Record<DmStyle, { label: string; tagline: string; desc: string }> = {
+    default: { label: '硬核沉浸', tagline: '真实冒险 · 世界自转', desc: '拒绝修罗场和玩家中心，世界有自己的节奏。严格判定，失败有真实代价，环境描写营造沉浸感。' },
+    comedy: { label: '轻松喜剧', tagline: '欢乐跑团 · 笑料优先', desc: '失败不致命，只会出洋相。鼓励队友互相拆台、抖机灵，战斗也可以很滑稽。' },
+    horror: { label: '恐怖惊悚', tagline: '未知威胁 · 心理恐惧', desc: '氛围优先于行动，多用暗示与留白。慢节奏营造压抑感，SAN 侵蚀伴随幻觉与偏执。' },
+    romance: { label: '浪漫风格', tagline: '双人物语 · 甜蜜冒险', desc: '镜头始终围着你和TA。麻烦来自外部，TA永远站在你这边，失败也能变成拉近关系的契机。' },
+};
+
+// 每回合 GM 指令里"去玩家中心"+"风格基调"这两段（对应原文里的第 2、3 条），按 dmStyle 切换。
+// 其余段落（全员入戏/生成选项/一致性自检/输出格式）四种风格通用，不在这里分叉。
+const buildGmStyleSection = (style: DmStyle): string => {
+    switch (style) {
+        case 'comedy':
+            return `2. **去玩家中心 · 但保持轻松 (关键)**:
+   - 队友仍各有各的小心思和吐槽点，不必都围着玩家转，但整体基调轻松愉快。
+   - **鼓励互相调侃**：队友之间互相拆台、抖机灵是加分项，但别真的伤感情。
+   - 世界照常运转，但麻烦多半是"闹出乱子"，不是真正致命的威胁。
+
+3. **欢乐向 GM 风格**:
+   - **失败不致命**：判定失败的代价是尴尬/搞笑/出洋相（摔倒、说错话、道具失灵），不要写成重伤或死亡。
+   - **物理喜剧**：战斗和意外可以有滑稽元素（踩到香蕉皮、武器卡壳、掉进水坑但只是弄脏衣服）。
+   - **HP/SAN 走轻代价**：即使掉血/掉san，也倾向小幅度、能很快恢复，别把结局写得阴暗。
+   - **昏迷/疯狂**: 若真的触发（HP/SAN归零），用带点黑色幽默的方式描写，而不是渲染绝望。
+   - **Markdown 排版**: 请在 \`gm_narrative\` 和 \`dialogue\` 中积极使用 Markdown 营造轻快节奏。`;
+        case 'horror':
+            return `2. **去玩家中心 · 让恐惧自己蔓延 (关键)**:
+   - 队友们有各自的恐惧和秘密，可能隐瞒、可能崩溃，不必都围着玩家转找安全感。
+   - **各有所图**：每个角色带着自己的目的和情绪行动，危机面前不一定团结一致。
+   - 世界（或"它"）有自己的意志，不因玩家的行动而停下。
+
+3. **恐怖惊悚 GM 风格**:
+   - **氛围优先**：描写阴森、压抑、窸窣声、若隐若现的影子，多用暗示和留白，不要一次性揭示怪物全貌或真相。
+   - **慢节奏 + 突然惊吓**：大部分时间压抑铺垫，关键时刻才给一次真正的惊吓，别每回合都惊悚轰炸。
+   - **骰点判定依然严格**：按【本回合判定】的采纳规则裁定成败，骰得差要有真实代价；调查/逃跑往往比正面战斗更合理。
+   - **HP/SAN 是逐人的**：不要把队友的伤/惧算到玩家头上；SAN 下降要配心理描写（幻听、幻视、偏执、时间感错乱），不只是扣数字。
+   - **昏迷/疯狂**: 已昏迷的角色本回合不能自主行动，只能被搬动/救治；已疯狂的角色仍在场，但言行失控诡异。
+   - **Markdown 排版**: 用于强调那些令人不安的关键细节。`;
+        case 'romance':
+            return `2. **镜头始终围着你和TA (关键)**:
+   - 这里**不需要"去玩家中心"**——恰恰相反，要让镜头聚焦在玩家和TA之间的互动上，其他NPC/队友戏份让位。
+   - **主动示好**：TA应该主动做出关怀/亲密的小动作（牵手、递水、递外套、扶一把），不必等玩家先开口。
+   - **绝不制造两人间的裂痕**：麻烦来自外部环境/事件/NPC，绝不安排TA和玩家之间的猜疑、冷战或矛盾——遇到问题TA永远站在玩家这一边。
+   - **世界仍在运转，但服务于氛围**：环境描写为营造浪漫感服务（夕阳、篝火、并肩走的小路），危机是"两人一起克服"的浪漫桥段，而非生死威胁。
+
+3. **浪漫 GM 风格**:
+   - **判定代价温柔化**：失败不写重伤/死亡，而是"需要TA扶一把""吓得抓住TA的手""闹了个小乌龙但两人一起笑出来"——把风险转化为拉近关系的契机。
+   - **情感浓度**：台词多带撒娇/关心/吃醋/害羞等情绪色彩，鼓励TA主动表达在意，而不是等玩家先说。
+   - **留白与安静片段**：允许一起吃饭、看星星这类没有强情节推进的相处时刻，不必每回合都制造事件。
+   - **HP/SAN 走轻代价**：即使有战斗/危险场面，也尽量点到为止，重点始终落回两人的互动与情感。
+   - **Markdown 排版**: 用于强调温柔的细节和情绪，例如 *轻声说* 这样的动作描写。`;
+        default:
+            return `2. **去玩家中心 · 让世界自己转 (关键)**:
+   - **拒绝修罗场**: 队友们不是来讨好/争抢玩家的 NPC。不要让所有人都把注意力黏在玩家身上、抢着对玩家示好。
+   - **各有所图**: 每个角色都带着**自己的目的、立场和情绪**行动，可以分歧、可以自顾自做事、可以暂时忽略玩家。
+   - **因地制宜**: 同一个角色在战斗、社交、独处、危机等不同环境下应表现出**不同侧面**，而非一套反应走到底。
+   - **剧情自驱**: 世界有自己的节奏——即使玩家什么都不做，也会有事件发生、势力推进、NPC 行动。主动推动主线。
+
+3. **硬核 GM 风格**:
+   - **制造冲突**: 不要让旅途一帆风顺。安排陷阱、突发战斗、尴尬的社交场面、或者道德困境。
+   - **环境描写**: 描述光影、气味、声音，营造沉浸感。
+   - **骰点判定**: 按【本回合判定】里的采纳规则，挑出本回合真正构成检定的行动，在 \`checks\` 里给出成败结果，严格依据对应骰点结果裁定，骰得差就要有真实代价；判定过的事在 \`gm_narrative\` 里要让读者感觉到"这确实是一次有悬念的尝试"，不要写得云淡风轻。
+   - **HP/SAN 是逐人的**: 每个人的生命/理智值是独立的，不要把队友的伤算到玩家头上，也不要让所有人的血条永远同步变化——战斗/惊悚场面通常只有直接相关的人掉血/掉san。
+   - **昏迷/疯狂**: 已昏迷（HP归零）的角色本回合不能自主行动/发言，只能被队友搬动或救治，请不要在 \`characters\` 里给TA安排新的主动行为；已疯狂（SAN归零）的角色仍在场，但言行应体现失控/诡异，不是消失。
+   - **Markdown 排版**: 请在 \`gm_narrative\` 和 \`dialogue\` 中**积极使用 Markdown**。例如：使用 **加粗** 强调重点，使用 *斜体* 描述动作。`;
+    }
+};
+
+// 开场序章的"任务"三条（剧情描述/角色反应/初始选项），按 dmStyle 切换措辞与侧重点。
+const buildPrologueStyleTask = (style: DmStyle): { p1: string; p2: string; p3: string } => {
+    switch (style) {
+        case 'comedy':
+            return {
+                p1: '**剧情描述**: 轻松地铺开这个世界正在发生的趣事或小麻烦，基调幽默，不要一上来就阴暗沉重。',
+                p2: '**角色反应**: 简要描述队友们的初始状态或第一句台词，可以互相调侃、抖机灵，展现各自搞笑的一面。请**务必**参考【神经链接】中的私聊状态来决定他们的态度。',
+                p3: '**初始选项**: 给出三个玩家可以采取的行动选项，风险不必致命，出岔子也该是好笑的',
+            };
+        case 'horror':
+            return {
+                p1: '**剧情描述**: 先铺开压抑诡异的氛围和隐约的危机，不要直接揭示恐惧的真相，留白和暗示优先。**先有世界，再有人**——开场不要围着玩家转，而是把不安的舞台铺开。',
+                p2: '**角色反应**: 简要描述队友们的初始状态或第一句台词，可以表现出不安、警觉或掩饰的恐惧。请**务必**参考【神经链接】中的私聊状态来决定他们的态度。',
+                p3: '**初始选项**: 给出三个玩家可以采取的行动选项，倾向调查/试探而非正面冲突',
+            };
+        case 'romance':
+            return {
+                p1: '**剧情描述**: 镜头聚焦在玩家和TA的相处上，世界观作为浪漫氛围的背景铺陈（不必强调"危机逼近"），营造温暖轻松的开场。',
+                p2: '**角色反应**: 简要描述TA的初始状态或第一句台词，应体现对玩家的关心或亲近。请**务必**参考【神经链接】中的私聊状态来决定亲密程度，但基调始终温柔，绝不冷淡或疏离。',
+                p3: '**初始选项**: 给出三个玩家可以采取的行动选项，风险应轻松、不致命，更像"如何更靠近TA"的选择',
+            };
+        default:
+            return {
+                p1: '**剧情描述**: 描述这个世界正在发生什么、小队所处的环境与正在逼近的事件。**先有世界，再有人**——开场不要围着玩家转，而是把舞台和危机铺开。',
+                p2: '**角色反应**: 简要描述队友们的初始状态或第一句台词。请**务必**参考【神经链接】中的私聊状态来决定他们的态度；同时让每个角色展现**自己的性格与目的**，而不是一上来就众星捧月地讨好玩家。',
+                p3: '**初始选项**: 给出三个玩家可以采取的行动选项',
+            };
+    }
+};
 
 // 鲁棒解析 AI 世界观生成结果。
 // 兼容三种情况：① 期望的「标题：xxx === 正文」分隔格式；② 模型不听话仍吐 JSON
@@ -229,12 +328,14 @@ const GameApp: React.FC = () => {
     const [newTitle, setNewTitle] = useState('');
     const [newWorld, setNewWorld] = useState('');
     const [newTheme, setNewTheme] = useState<GameTheme>('fantasy');
+    const [newDmStyle, setNewDmStyle] = useState<DmStyle>('default'); // GM 指令风格：默认/喜剧/恐怖/浪漫
     const [selectedPlayers, setSelectedPlayers] = useState<Set<string>>(new Set());
     const [playerGroupId, setPlayerGroupId] = useState(GROUP_FILTER_ALL); // 邀请队友的分组筛选
     const [isCreating, setIsCreating] = useState(false);
     // 世界观 AI 辅助生成
     const [worldStyle, setWorldStyle] = useState<string>('高奇幻');
     const [worldIdea, setWorldIdea] = useState('');        // 用户额外给的灵感/想法（可选）
+    const [worldPacing, setWorldPacing] = useState<'crisis' | 'open'>('crisis'); // 叙事节奏：危机驱动 / 开放式冒险
     const [isGeneratingWorld, setIsGeneratingWorld] = useState(false);
     // 新游戏玩法设置
     const [newDiceDisabled, setNewDiceDisabled] = useState(false);            // 关闭骰子（默认每次直接成功）
@@ -266,6 +367,9 @@ const GameApp: React.FC = () => {
     const [selectedLogIds, setSelectedLogIds] = useState<Set<string>>(new Set());
     const [isForwarding, setIsForwarding] = useState(false);
     const [lastRoll, setLastRoll] = useState<number | null>(null); // 最近一次自动骰点结果（瞬时展示）
+    // 本回合骰点已经落库渲染，但 GM 还没推算出是否被采纳为正式检定——这段时间里 diceRoll.tier 是"未知"而非"未采纳"，
+    // 用这个 id 让下面两处气泡渲染暂时不显示徽章/判定说明，避免闪一下灰色"未被采纳"再被结果覆盖掉。
+    const [pendingRollLogId, setPendingRollLogId] = useState<string | null>(null);
     const [lastTokenUsage, setLastTokenUsage] = useState<{prompt?: number, completion?: number, total: number} | null>(null);
     const [totalTokensUsed, setTotalTokensUsed] = useState(0);
     
@@ -288,6 +392,13 @@ const GameApp: React.FC = () => {
     const [playSubView, setPlaySubView] = useState<'game' | 'chatroom'>('game'); // 局内全屏切换：剧情 vs 聊天室（皮下吐槽），不是弹窗
     const [oocInput, setOocInput] = useState('');
     const [isOocLoading, setIsOocLoading] = useState(false);
+    const [selectedOocId, setSelectedOocId] = useState<string | null>(null);
+    const [oocModalType, setOocModalType] = useState<'none' | 'options' | 'edit'>('none');
+    const [editOocContent, setEditOocContent] = useState('');
+    const oocPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [oocSelectMode, setOocSelectMode] = useState(false);          // 聊天室长按多选 → 批量删除/转发到聊天
+    const [selectedOocIds, setSelectedOocIds] = useState<Set<string>>(new Set());
+    const [isOocForwarding, setIsOocForwarding] = useState(false);
     const [uiSettings, setUiSettings] = useState<{fontSize: number, color: string}>({ fontSize: 14, color: '' });
 
     // SAN Lock: Sync from activeGame on load
@@ -472,15 +583,19 @@ ${recentLog}
         try {
             // [鲁棒性] 改用带分隔符的纯文本格式而非 JSON——即使被截断也能干净解析；
             // 不再限制字数，给足 token 防止半路砍断。
+            const pacingTask = worldPacing === 'open'
+                ? '<世界观正文。请写充分、生动，篇幅自由不设上限，包含：时代/地点背景与基调氛围、这个世界日常的运转方式与生活质感、登场角色（不预设人数与关系）的处境与动机、一两个可长期探索的悬念或势力。这是开放式冒险，不需要设置紧迫的核心危机，重点是让世界耐逛、经得起慢慢晃悠，不要写死结局。>'
+                : '<世界观正文。请写充分、生动，篇幅自由不设上限，包含：时代/地点背景与基调氛围、当前世界的核心矛盾或危机、登场角色（不预设人数与关系）的处境与初始目标钩子、一两个可探索的悬念或势力。留足玩家发挥空间，不要写死结局。>';
             const prompt = `你是一位资深的 TRPG（桌面跑团）剧本设计师。请按照指定风格，原创一个适合开团的世界观设定。
 **风格基调**: ${worldStyle}
+**叙事节奏**: ${worldPacing === 'open' ? '开放式冒险——不强求紧迫的核心危机，重点是世界本身好逛、细节扎实，节奏可以松散、生活化' : '危机驱动——世界当下有明确的核心矛盾或危机，作为冒险的主线张力'}
 ${worldIdea.trim() ? `**玩家的灵感/想法（请务必围绕它发挥）**: ${worldIdea.trim()}` : ''}
 
 请严格按下面的纯文本格式输出，**不要用 JSON，不要代码块，不要额外说明**：
 
 标题：<一个有吸引力的剧本标题>
 ===
-<世界观正文。请写充分、生动，篇幅自由不设上限，包含：时代/地点背景与基调氛围、当前世界的核心矛盾或危机、玩家小队的处境与初始目标钩子、一两个可探索的悬念或势力。留足玩家发挥空间，不要写死结局。>`;
+${pacingTask}`;
 
             const data = await fetchGameAPI(prompt, 6000);
             const raw = (extractContent(data) || '').trim();
@@ -632,6 +747,7 @@ ${worldIdea.trim() ? `**玩家的灵感/想法（请务必围绕它发挥）**: 
                 : RULE_SYSTEMS[newRuleSystem];
             const hasSheets = Object.keys(newCharacterSheets).length > 0;
             const ruleSystemBlock = `**规则系统**: ${ruleSystemDef.name}（${ruleSystemDef.tagline}）${hasSheets ? formatCharacterSheetsBlock(ruleSystemDef, newCharacterSheets) : ''}`;
+            const prologueTask = buildPrologueStyleTask(newDmStyle);
             const prompt = `### TRPG 序章生成 (Game Start)
 **剧本标题**: ${newTitle}
 **世界观设定**: ${newWorld}
@@ -643,10 +759,11 @@ ${ruleSystemBlock}
 ${playerContext}
 
 ### 任务
-你现在是 **Game Master (GM)**。请为这个冒险故事生成一个**精彩的开场 (Prologue)**。
-1. **剧情描述**: 描述这个世界正在发生什么、小队所处的环境与正在逼近的事件。**先有世界，再有人**——开场不要围着玩家转，而是把舞台和危机铺开。
-2. **角色反应**: 简要描述队友们的初始状态或第一句台词。请**务必**参考【神经链接】中的私聊状态来决定他们的态度；同时让每个角色展现**自己的性格与目的**，而不是一上来就众星捧月地讨好玩家。
-3. **初始选项**: 给出三个玩家可以采取的行动选项${newDiceDisabled ? '（本场未启用骰子，玩家行动默认顺利成功，选项可以是各种有趣的方向）' : `（每个选项玩家执行时都会自动骰 ${activeDice.label} 判定，因此选项应是"有成败风险的尝试"而非必然成功的动作）`}。
+你现在是 **Game Master (GM)**，本场的 DM 风格是「${DM_STYLE_META[newDmStyle].label}」：${DM_STYLE_META[newDmStyle].desc}
+请按这个风格为这个冒险故事生成一个**精彩的开场 (Prologue)**。
+1. ${prologueTask.p1}
+2. ${prologueTask.p2}
+3. ${prologueTask.p3}${newDiceDisabled ? '（本场未启用骰子，玩家行动默认顺利成功，选项可以是各种有趣的方向）' : `（每个选项玩家执行时都会自动骰 ${activeDice.label} 判定，因此选项应是"有成败风险的尝试"而非必然成功的动作）`}。
 
 ### 一致性自检 (Consistency Check)
 输出前，请在心里核对：每个角色的台词/行为是否**只**来自 TA 自己的"角色档案"（性格、记忆、印象）？严禁把某个角色的记忆、口癖或人设安到另一个角色身上（防止"串台"）。
@@ -685,7 +802,8 @@ ${playerContext}
 
                 if (Array.isArray(res.characters)) {
                     for (const charAct of res.characters) {
-                        const char = players.find(p => p.id === charAct.charId || p.name === charAct.charId);
+                        // 优先用 id 精确匹配，name 匹配仅兜底
+                        const char = players.find(p => p.id === charAct.charId) || players.find(p => p.name === charAct.charId);
                         if (char) {
                             initialLogs.push({
                                 id: `init-char-${char.id}`,
@@ -730,6 +848,8 @@ ${playerContext}
                 suggestedActions: res?.suggested_actions || [],
                 diceDisabled: newDiceDisabled,
                 archiveMode: newArchiveMode,
+                dmStyle: newDmStyle,
+                worldPacing,
                 ruleSystem: newRuleSystem,
                 diceConfig: newRuleSystem === 'freeform' ? newDiceConfig : undefined,
                 freeformSpecialSkills: newRuleSystem === 'freeform' && newFreeformSpecialSkills.length > 0 ? newFreeformSpecialSkills : undefined,
@@ -749,6 +869,7 @@ ${playerContext}
             setWorldIdea('');
             setNewDiceDisabled(false);
             setNewArchiveMode('auto');
+            setNewDmStyle('default');
             setSelectedPlayers(new Set());
             setNewRuleSystem('freeform');
             setNewDiceConfig(DEFAULT_DICE_CONFIG);
@@ -948,20 +1069,30 @@ ${recentOoc}
 
             if (newOocLogs.length === 0) return;
 
-            const finalOocLogs = newOocLogs.map(r => ({
-                id: `ooc-${Date.now()}-${Math.random()}`,
-                charId: r.charId,
-                speakerName: r.speakerName,
-                content: r.content,
-                timestamp: Date.now(),
-            }));
-
-            setActiveGame(prev => {
-                if (!prev || prev.id !== game.id) return prev;
-                const updated = { ...prev, oocLogs: [...(prev.oocLogs || []), ...finalOocLogs] };
-                DB.saveGame(updated);
-                return updated;
-            });
+            // 按正常聊天的分段逻辑（ChatParser.chunkText，主线聊天也用它）把每个角色的一整段吐槽
+            // 拆成几条自然的短消息，并复用同款「按长度算延迟」逐条落库，让聊天室也有逐条蹦出来的节奏，
+            // 不再是一次性甩一大段。角色之间、角色自己的多条之间都按顺序依次出现。
+            for (const r of newOocLogs) {
+                const chunks = ChatParser.chunkText(r.content).filter(c => ChatParser.hasDisplayContent(c));
+                const segments = chunks.length > 0 ? chunks : [r.content];
+                for (const seg of segments) {
+                    const delay = Math.min(Math.max(seg.length * 50, 500), 2000);
+                    await new Promise(res => setTimeout(res, delay));
+                    const entry = {
+                        id: `ooc-${Date.now()}-${Math.random()}`,
+                        charId: r.charId,
+                        speakerName: r.speakerName,
+                        content: seg,
+                        timestamp: Date.now(),
+                    };
+                    setActiveGame(prev => {
+                        if (!prev || prev.id !== game.id) return prev;
+                        const updated = { ...prev, oocLogs: [...(prev.oocLogs || []), entry] };
+                        DB.saveGame(updated);
+                        return updated;
+                    });
+                }
+            }
         } finally {
             setIsOocLoading(false);
         }
@@ -980,6 +1111,117 @@ ${recentOoc}
         setActiveGame(updated);
         setOocInput('');
         await DB.saveGame(updated);
+    };
+
+    // 聊天室消息长按菜单：跟主线私聊（编辑内容/删除消息）对齐的编辑/删除，直接改 oocLogs 数组落库
+    // （聊天室没有独立的消息表，一整局的吐槽记录就是 GameSession.oocLogs 这一个字段）。
+    const startOocPress = (id: string) => {
+        if (oocSelectMode) return;
+        cancelOocPress();
+        oocPressTimer.current = setTimeout(() => {
+            if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
+            setSelectedOocId(id);
+            setOocModalType('options');
+        }, 500);
+    };
+    const cancelOocPress = () => {
+        if (oocPressTimer.current) { clearTimeout(oocPressTimer.current); oocPressTimer.current = null; }
+    };
+    const handleOocEnterSelectionMode = () => {
+        if (selectedOocId) {
+            setSelectedOocIds(new Set([selectedOocId]));
+            setOocSelectMode(true);
+            setOocModalType('none');
+            setSelectedOocId(null);
+        }
+    };
+    const toggleSelectOoc = (id: string) => {
+        setSelectedOocIds(prev => {
+            const n = new Set(prev);
+            n.has(id) ? n.delete(id) : n.add(id);
+            return n;
+        });
+    };
+    const exitOocSelectMode = () => {
+        setOocSelectMode(false);
+        setSelectedOocIds(new Set());
+    };
+    const handleOocEditStart = () => {
+        if (!activeGame || !selectedOocId) return;
+        const target = (activeGame.oocLogs || []).find(o => o.id === selectedOocId);
+        if (!target) return;
+        setEditOocContent(target.content);
+        setOocModalType('edit');
+    };
+    const confirmOocEdit = async () => {
+        if (!activeGame || !selectedOocId) return;
+        const updated = {
+            ...activeGame,
+            oocLogs: (activeGame.oocLogs || []).map(o => o.id === selectedOocId ? { ...o, content: editOocContent } : o),
+        };
+        setActiveGame(updated);
+        await DB.saveGame(updated);
+        setOocModalType('none');
+        setSelectedOocId(null);
+        addToast('消息已修改', 'success');
+    };
+    const handleOocDelete = async () => {
+        if (!activeGame || !selectedOocId) return;
+        const updated = { ...activeGame, oocLogs: (activeGame.oocLogs || []).filter(o => o.id !== selectedOocId) };
+        setActiveGame(updated);
+        await DB.saveGame(updated);
+        setOocModalType('none');
+        setSelectedOocId(null);
+        addToast('消息已删除', 'success');
+    };
+
+    // 批量删除选中的聊天室消息
+    const handleOocBatchDelete = async () => {
+        if (!activeGame || selectedOocIds.size === 0) return;
+        const updated = { ...activeGame, oocLogs: (activeGame.oocLogs || []).filter(o => !selectedOocIds.has(o.id)) };
+        setActiveGame(updated);
+        await DB.saveGame(updated);
+        addToast(`已删除 ${selectedOocIds.size} 条`, 'success');
+        exitOocSelectMode();
+    };
+
+    // 把选中的聊天室消息打包成 trpg_card 转发到聊天，跟剧情视图 handleForwardToChat 同一套卡片格式，
+    // 只是 excerpt 里 role 统一标成 'player'（聊天室发言没有 GM/角色区分，都当作"发言"展示）。
+    const handleOocForwardToChat = async () => {
+        if (!activeGame || selectedOocIds.size === 0) return;
+        setIsOocForwarding(true);
+        try {
+            const players = characters.filter(c => activeGame.playerCharIds.includes(c.id));
+            const selected = (activeGame.oocLogs || []).filter(o => selectedOocIds.has(o.id));
+            const excerpt = selected.map(o => ({
+                role: 'player',
+                speaker: o.speakerName,
+                text: o.content,
+            }));
+            const trpg = {
+                gameTitle: `${activeGame.title}·聊天室`,
+                theme: activeGame.theme,
+                userName: userProfile.name,
+                partyNames: players.map(p => p.name),
+                excerpt,
+                count: excerpt.length,
+            };
+            for (const p of players) {
+                await DB.saveMessage({
+                    charId: p.id,
+                    role: 'user',
+                    type: 'trpg_card',
+                    content: `[TRPG游戏片段]《${activeGame.title}》聊天室`,
+                    metadata: { trpg },
+                });
+            }
+            addToast(`已转发到 ${players.length} 位角色的聊天`, 'success');
+            exitOocSelectMode();
+        } catch (e: any) {
+            addToast(`转发失败: ${e.message}`, 'error');
+        } finally {
+            setIsOocForwarding(false);
+        }
     };
 
     // 把聊天室（皮下吐槽）里尚未推送过的原文，直接（不经过 LLM）塞进参与角色的记忆 + 一条聊天系统消息。
@@ -1016,7 +1258,11 @@ ${recentOoc}
 
     // --- Gameplay Logic ---
     const handleAction = async (actionText: string, isReroll: boolean = false) => {
-        if (!activeGame || !apiConfig.apiKey) return;
+        if (!activeGame || !apiConfig.apiKey || isTyping) return;
+        // 立即同步置位，堵住"点击后 setIsTyping(true) 真正生效前"那个窗口——
+        // 否则连续快速点击（比如双击发送）可能在按钮变灰之前就发出第二次调用。
+        setIsTyping(true);
+        const gameId = activeGame.id;
 
         let contextLogs = activeGame.logs;
         let updatedGame = activeGame;
@@ -1055,18 +1301,36 @@ ${recentOoc}
                 diceRoll: currentRoll ? { result: currentRoll, max: diceCfg.count * diceCfg.sides } : undefined
             };
             userLogId = userLog.id;
+            if (currentRoll !== null) setPendingRollLogId(userLogId);
 
             const updatedLogs = [...activeGame.logs, userLog];
-            updatedGame = { ...activeGame, logs: updatedLogs, lastPlayedAt: Date.now(), suggestedActions: [] }; // Clear options while thinking
-            setActiveGame(updatedGame);
+            updatedGame = { ...activeGame, logs: updatedLogs, lastPlayedAt: Date.now(), suggestedActions: [] };
+            // 函数式更新防止竞态（快速连点时 activeGame 可能已过期）
+            setActiveGame(prev => (prev?.id === gameId ? updatedGame : prev));
             await DB.saveGame(updatedGame);
             contextLogs = updatedLogs;
+        } else {
+            // 重新推演（多为"AI 判定结果与骰点/数值不符"报错后点右下角按钮）：
+            // 玩家本人的骰点必须原样保留（不能悄悄换一个新数字再判一次），从上一条 player/system log 里找回来；
+            // 队友的骰点在上次失败的那轮从没存档过（报错发生在角色发言生成之前），只能重投一次——
+            // 这不影响体验，因为上次失败的队友骰点本来就没在气泡里展示过。
+            const lastActionLog = [...contextLogs].reverse().find(l => l.role === 'player' || l.role === 'system');
+            if (lastActionLog) {
+                userLogId = lastActionLog.id;
+                if (lastActionLog.diceRoll) {
+                    currentRoll = lastActionLog.diceRoll.result;
+                    setPendingRollLogId(userLogId);
+                    if (!activeGame.diceDisabled) {
+                        partyRolls = players.filter(p => getVitals(p.id).health > 0).map(p => ({ id: p.id, name: p.name, roll: rollDice(diceCfg) }));
+                        const rollSummary = partyRolls.map(r => `${r.name}:${r.roll}`).join(' / ');
+                        if (rollSummary) addToast(`队友重新判定 → ${rollSummary}`, 'info');
+                    }
+                }
+            }
         }
 
         setUserInput('');
-        setIsTyping(true);
-        setLastTokenUsage(null);
-        addToast('GM 正在推演...', 'info'); // Feedback for Sync
+        addToast('GM 正在推演...', 'info');
 
         try {
             // 2. Build Context WITH RELATIONSHIP SYNC
@@ -1114,6 +1378,7 @@ ${recentOoc}
             const hasSheet = !!(activeGame.characterSheets && Object.keys(activeGame.characterSheets).length > 0);
             const characterSheetsBlock = hasSheet ? formatCharacterSheetsBlock(ruleSystemDef, activeGame.characterSheets!) : '';
             const ruleSystemHeader = `\n### 规则系统: ${ruleSystemDef.name}\n${ruleSystemDef.tagline}\n${characterSheetsBlock}`;
+            const dmStyle: DmStyle = activeGame.dmStyle || 'default';
             // [新] 全员先骰后判：本回合每个人（玩家+全体队友）都已经先投好了骰子，具体哪些点数真正构成一次检定、
             // 用哪个技能裁定，交给这同一次生成来决定——省掉一次单独"是否需要判定"的预调用。
             const partyRollLines = [
@@ -1152,7 +1417,7 @@ ${recapBlock}### 冒险记录 (Recent Log)
 ${activeLogText}
 ${rollInstruction}
 ### GM 指令 (Game Master Instructions)
-你现在是这场跑团游戏的 **主持人 (GM)**。
+你现在是这场跑团游戏的 **主持人 (GM)**，本场的 DM 风格是「${DM_STYLE_META[dmStyle].label}」：${DM_STYLE_META[dmStyle].desc}
 **现在的状态**：这是一群真实的朋友（基于神经链接中的私聊关系）在一起玩跑团游戏。
 
 **请遵循以下法则**：
@@ -1162,19 +1427,7 @@ ${rollInstruction}
    - **私聊影响 (关键)**: 请根据【神经链接】中的“关系温度”和“最近话题”来调整每个角色的反应。
    - **队内互动**: 队友之间也可以有互动（比如A吐槽B的计划）。
 
-2. **去玩家中心 · 让世界自己转 (关键)**:
-   - **拒绝修罗场**: 队友们不是来讨好/争抢玩家的 NPC。不要让所有人都把注意力黏在玩家身上、抢着对玩家示好。
-   - **各有所图**: 每个角色都带着**自己的目的、立场和情绪**行动，可以分歧、可以自顾自做事、可以暂时忽略玩家。
-   - **因地制宜**: 同一个角色在战斗、社交、独处、危机等不同环境下应表现出**不同侧面**，而非一套反应走到底。
-   - **剧情自驱**: 世界有自己的节奏——即使玩家什么都不做，也会有事件发生、势力推进、NPC 行动。主动推动主线。
-
-3. **硬核 GM 风格**:
-   - **制造冲突**: 不要让旅途一帆风顺。安排陷阱、突发战斗、尴尬的社交场面、或者道德困境。
-   - **环境描写**: 描述光影、气味、声音，营造沉浸感。
-   - **骰点判定**: 按【本回合判定】里的采纳规则，挑出本回合真正构成检定的行动，在 \`checks\` 里给出成败结果，严格依据对应骰点结果裁定，骰得差就要有真实代价；判定过的事在 \`gm_narrative\` 里要让读者感觉到"这确实是一次有悬念的尝试"，不要写得云淡风轻。
-   - **HP/SAN 是逐人的**: 每个人的生命/理智值是独立的，不要把队友的伤算到玩家头上，也不要让所有人的血条永远同步变化——战斗/惊悚场面通常只有直接相关的人掉血/掉san。
-   - **昏迷/疯狂**: 已昏迷（HP归零）的角色本回合不能自主行动/发言，只能被队友搬动或救治，请不要在 \`characters\` 里给TA安排新的主动行为；已疯狂（SAN归零）的角色仍在场，但言行应体现失控/诡异，不是消失。
-   - **Markdown 排版**: 请在 \`gm_narrative\` 和 \`dialogue\` 中**积极使用 Markdown**。例如：使用 **加粗** 强调重点，使用 *斜体* 描述动作。
+${buildGmStyleSection(dmStyle)}
 
 4. **生成选项 (Action Options)**:
    - 请根据当前局势，为玩家提供 3 个可选的行动建议（玩家选择后都会自动骰 ${diceCfg.label} 判定，因此选项应是有成败风险的尝试）。
@@ -1227,8 +1480,14 @@ ${rollInstruction}
             const newlyDeadIds: string[] = [];
             if (Array.isArray(res?.statusChanges)) {
                 for (const sc of res.statusChanges) {
-                    const matched = sc.charId === '__player__' ? '__player__' : players.find(p => p.id === sc.charId || p.name === sc.charId)?.id;
-                    if (!matched) continue;
+                    // 优先用 id 精确匹配，name 匹配仅兜底（防止角色改名后 AI 还用旧名导致匹配不到）
+                    const matched = sc.charId === '__player__'
+                        ? '__player__'
+                        : (players.find(p => p.id === sc.charId)?.id || players.find(p => p.name === sc.charId)?.id);
+                    if (!matched) {
+                        console.warn(`[GameApp] statusChanges 里的 charId="${sc.charId}" 匹配不到任何队友，已跳过`);
+                        continue;
+                    }
                     const prev = newVitals[matched];
                     let health = prev.health;
                     if (typeof sc.hpChange === 'number' && sc.hpChange) {
@@ -1253,8 +1512,14 @@ ${rollInstruction}
             const checkByCharId: Record<string, { skill?: string; success?: boolean; outcome?: string; tier?: CheckTier }> = {};
             if (Array.isArray(res?.checks)) {
                 for (const c of res.checks) {
-                    const matched = c.charId === '__player__' ? '__player__' : players.find(p => p.id === c.charId || p.name === c.charId)?.id;
-                    if (!matched) continue;
+                    // 优先用 id 精确匹配，name 匹配仅兜底（防止角色改名后 AI 还用旧名导致匹配不到）
+                    const matched = c.charId === '__player__'
+                        ? '__player__'
+                        : (players.find(p => p.id === c.charId)?.id || players.find(p => p.name === c.charId)?.id);
+                    if (!matched) {
+                        console.warn(`[GameApp] checks 里的 charId="${c.charId}" 匹配不到任何队友，已跳过`);
+                        continue;
+                    }
                     const roll = rollByCharId[matched];
                     if (roll === undefined || roll < 0) continue; // 没骰过的人不该出现在 checks 里，脏数据直接丢弃
 
@@ -1263,9 +1528,20 @@ ${rollInstruction}
                     const mechanical = computeCheckTier(ruleSystemDef, diceCfg, roll, skillValue, c.target);
                     const aiSuccess = c.success !== false;
                     if (aiSuccess !== mechanical.success) {
-                        throw new Error(`判定结果与骰点/数值算不上（${c.skill || '未知判定'}），请重新推演这一回合`);
+                        throw new Error(`AI 判定结果与骰点/数值不符（${c.skill || '未知判定'}），点击右下角 🔄 按钮重新生成`);
                     }
                     checkByCharId[matched] = { skill: c.skill, success: mechanical.success, outcome: c.outcome || mechanical.label, tier: mechanical.tier };
+                }
+            }
+
+            // 队友死亡通知（玩家死亡已经在下方 playerCanAct 那块有专门的 UI 旁观提示，不需要重复 toast）
+            if (newlyDeadIds.length > 0) {
+                const deadNames = newlyDeadIds
+                    .filter(id => id !== '__player__')
+                    .map(id => players.find(p => p.id === id)?.name || '队友')
+                    .filter(Boolean);
+                if (deadNames.length > 0) {
+                    addToast(`${deadNames.join('、')} 已死亡，永久离队`, 'error');
                 }
             }
 
@@ -1282,7 +1558,8 @@ ${rollInstruction}
 
                 if (Array.isArray(res.characters)) {
                     for (const charAct of res.characters) {
-                        const char = players.find(p => p.id === charAct.charId || p.name === charAct.charId);
+                        // 优先用 id 精确匹配，name 匹配仅兜底
+                        const char = players.find(p => p.id === charAct.charId) || players.find(p => p.name === charAct.charId);
                         if (char) {
                             const combinedContent = `*${charAct.action || ''}* \n"${charAct.dialogue || ''}"`;
                             const check = checkByCharId[char.id];
@@ -1337,8 +1614,8 @@ ${rollInstruction}
                 deadCharIds: newDeadCharIds,
                 suggestedActions: res?.suggested_actions || []
             };
-            
-            setActiveGame(finalGame);
+
+            setActiveGame(prev => (prev?.id === gameId ? finalGame : prev));
             await DB.saveGame(finalGame);
 
             // 回合结束后检查是否需要自动总结归档前文
@@ -1351,6 +1628,7 @@ ${rollInstruction}
             addToast(`GM 掉线了: ${e.message}`, 'error');
         } finally {
             setIsTyping(false);
+            setPendingRollLogId(null);
         }
     };
 
@@ -1546,57 +1824,98 @@ ${logText}
         if (!activeGame) return;
         setIsArchiving(true);
         setShowSystemMenu(false);
-        
+
         try {
-            const players = characters.filter(c => activeGame.playerCharIds.includes(c.id));
+            const game = activeGame;
+            const players = characters.filter(c => game.playerCharIds.includes(c.id));
             const playerNames = players.map(p => p.name).join('、');
-            // Increase log context for summary
-            const logText = activeGame.logs.slice(-30).map(l => `${l.role}: ${l.content}`).join('\n');
-            
-            const prompt = `Task: Summarize the key events of this TRPG session into a short clause (what happened).
-Game: ${activeGame.title}
-Logs:
-${logText}
-Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆"). No preamble.`;
-
-            const data = await fetchGameAPI(prompt);
-            let summary = extractContent(data) || '进行了一场冒险';
-            summary = summary.replace(/[。\.]$/, ''); // Remove trailing dot
-
-            // Format: 【角色名们】和【用户名】一起玩了xxx，发生了xxxx
-            const memoryContent = `【${playerNames}】和【${userProfile.name}】一起玩了《${activeGame.title}》，发生了${summary}`;
-            
-            // Format: YYYY-MM-DD
             const now = new Date();
             const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-            for (const p of players) {
-                // 1. Inject into Memory
-                const mem = {
-                    id: `mem-${Date.now()}-${Math.random()}`,
-                    date: dateStr,
-                    summary: memoryContent,
-                    mood: 'fun'
-                };
-                updateCharacter(p.id, { memories: [...(p.memories || []), mem] });
+            // 把还没被自动总结覆盖的尾部日志，用跟自动总结完全一样的「小说式总结」提示词补总结一段——
+            // 这里之前用的是另一套"总结成一句话"的提示词，格式对不上段落总结，长度也差一大截，是这个函数一句话
+            // 总结的根源。
+            const nonArchived = game.logs.filter(l => !l.archived);
+            let finalChunkSummary = '';
+            let updatedGame = game;
+            if (nonArchived.length > 0) {
+                const prevRecap = (game.summaries || []).map((s, i) => `【第${i + 1}段】${s.content}`).join('\n');
+                const logText = nonArchived.map(l => {
+                    const who = l.role === 'gm' ? 'GM' : (l.speakerName || 'System');
+                    return `[${who}]: ${l.content}`;
+                }).join('\n');
 
-                // 2. Inject into Context via System Message
-                await DB.saveMessage({
-                    charId: p.id,
-                    role: 'system',
-                    type: 'text',
-                    content: `[TRPG 归档提醒: 刚刚你们一起玩了《${activeGame.title}》。${summary}。]`
-                });
+                const prompt = `你是一位擅长写小说的记录者。请把下面这段 TRPG 跑团剧情，总结成一段**连贯、生动、像小说梗概一样**的前情提要。
+${prevRecap ? `\n【已有前情（仅供衔接，不要重复）】\n${prevRecap}\n` : ''}
+【本段需要总结的剧情记录（这是最后一段，游戏即将归档退出）】
+${logText}
+
+要求：
+1. 用第三人称叙述，包含【起因 → 经过 → 结果】的来龙去脉。
+2. 重点写清楚**人物之间的关系变化与各自的处境/情绪**（谁和谁更近了/起了冲突/暴露了什么）。
+3. 控制在 200~350 字，文笔流畅，不要分点罗列，不要写"总结如下"之类的开场白。
+
+直接输出总结正文：`;
+
+                const data = await fetchGameAPI(prompt, 1500);
+                finalChunkSummary = (extractContent(data) || '').trim();
+                if (!finalChunkSummary) finalChunkSummary = '（这段冒险继续推进了剧情）';
+
+                const newSummary: GameSummary = {
+                    id: `sum-${Date.now()}`,
+                    content: finalChunkSummary,
+                    logCount: nonArchived.length,
+                    logIds: nonArchived.map(l => l.id),
+                    createdAt: Date.now(),
+                };
+                const archiveIds = new Set(nonArchived.map(l => l.id));
+                updatedGame = {
+                    ...game,
+                    logs: game.logs.map(l => archiveIds.has(l.id) ? { ...l, archived: true } : l),
+                    summaries: [...(game.summaries || []), newSummary],
+                };
             }
-            // 手动归档模式下，聊天室（皮下吐槽）原文没有跟随自动总结推送过——这里跟主线归档一起补送（同样不经过 LLM）
-            await pushOocToMemory(activeGame);
+
+            // 拼出要写入角色记忆/聊天的完整叙事：
+            // - auto 模式：之前每段总结在生成当时就已经推送过聊天了，这里只需要补最后这段尾巴。
+            // - manual 模式：所有总结段落此前都没推送过（只有点「归档并退出」才真正发到聊天）——这里要把
+            //   全部历史段落 + 最后这段一起拼成完整叙事发出去，否则前面大半场经历会凭空消失，只剩最后一小段。
+            const segments = game.archiveMode === 'auto'
+                ? [finalChunkSummary].filter(Boolean)
+                : [...(game.summaries || []).map(s => s.content), finalChunkSummary].filter(Boolean);
+            const fullNarrative = segments.join('\n\n');
+
+            if (fullNarrative) {
+                const cardLine = `和【${playerNames}】一起玩《${game.title}》TRPG，${fullNarrative}`;
+                for (const p of players) {
+                    const mem = {
+                        id: `mem-${Date.now()}-${Math.random()}`,
+                        date: dateStr,
+                        summary: cardLine,
+                        mood: 'fun'
+                    };
+                    updateCharacter(p.id, { memories: [...(p.memories || []), mem] });
+                    await DB.saveMessage({
+                        charId: p.id,
+                        role: 'system',
+                        type: 'text',
+                        content: `[TRPG 归档提醒: 刚刚你们一起玩了《${game.title}》。${fullNarrative}]`
+                    });
+                }
+            }
+
+            // 聊天室（皮下吐槽）原文没跟随自动总结推送过的，这里跟主线归档一起补送（同样不经过 LLM）
+            const pushedCount = await pushOocToMemory(updatedGame);
+            updatedGame = { ...updatedGame, oocPushedCount: pushedCount };
+            await DB.saveGame(updatedGame);
+
             addToast('记忆传递完成 (Chat & Memory)', 'success');
         } catch (e) {
             console.error(e);
             addToast('归档失败', 'error');
         } finally {
             setIsArchiving(false);
-            setView('lobby'); 
+            setView('lobby');
             setActiveGame(null);
         }
     };
@@ -1882,12 +2201,24 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                                 ))}
                             </div>
 
-                            {/* 额外灵感输入 (可选) */}
+                            {/* 叙事节奏：危机驱动 / 开放式冒险 */}
+                            <div className="grid grid-cols-2 gap-1.5 mb-3">
+                                <button
+                                    onClick={() => setWorldPacing('crisis')}
+                                    className={`px-2 py-1.5 rounded-lg text-[10px] font-medium border transition-all active:scale-95 ${worldPacing === 'crisis' ? 'bg-purple-500 text-white border-purple-400 shadow-lg shadow-purple-500/30' : 'bg-white/5 text-white/50 border-white/10 hover:bg-white/10'}`}
+                                >危机驱动</button>
+                                <button
+                                    onClick={() => setWorldPacing('open')}
+                                    className={`px-2 py-1.5 rounded-lg text-[10px] font-medium border transition-all active:scale-95 ${worldPacing === 'open' ? 'bg-purple-500 text-white border-purple-400 shadow-lg shadow-purple-500/30' : 'bg-white/5 text-white/50 border-white/10 hover:bg-white/10'}`}
+                                >开放式冒险</button>
+                            </div>
+
+                            {/* 额外灵感输入 (可选，开放式冒险下更需要具体设定) */}
                             <input
                                 value={worldIdea}
                                 onChange={e => setWorldIdea(e.target.value)}
                                 className="w-full bg-black/30 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white placeholder-white/25 focus:border-purple-400/60 outline-none transition-all mb-3"
-                                placeholder="再补充点想法？(可选，如：主角是失忆的赏金猎人)"
+                                placeholder={worldPacing === 'open' ? '开放式冒险建议写明具体设定，如：异世界日常、田园治愈生活' : '再补充点想法？(可选，如：主角是失忆的赏金猎人)'}
                             />
 
                             <button
@@ -2042,6 +2373,24 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                                         <div className={`absolute inset-0 bg-gradient-to-br ${meta.gradient} ${active ? 'opacity-90' : 'opacity-40'} transition-opacity`}></div>
                                         <span className="relative text-sm font-bold tracking-wide">{meta.label}</span>
                                         <span className="relative text-[8px] font-mono tracking-[0.2em] opacity-70">{meta.en}</span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* DM 风格 */}
+                    <div>
+                        <label className="text-[11px] font-bold text-white/40 uppercase tracking-wider block mb-2">DM 风格</label>
+                        <div className="grid grid-cols-2 gap-2.5">
+                            {(['default', 'comedy', 'horror', 'romance'] as DmStyle[]).map(s => {
+                                const meta = DM_STYLE_META[s];
+                                const active = newDmStyle === s;
+                                return (
+                                    <button key={s} onClick={() => setNewDmStyle(s)} className={`text-left p-3 rounded-xl border transition-all active:scale-95 ${active ? 'border-purple-400 bg-purple-500/15' : 'border-white/10 bg-white/5 hover:bg-white/10'}`}>
+                                        <div className={`text-xs font-bold mb-0.5 ${active ? 'text-purple-200' : 'text-white/80'}`}>{meta.label}</div>
+                                        <div className={`text-[9px] mb-1.5 ${active ? 'text-purple-300/80' : 'text-white/50'}`}>{meta.tagline}</div>
+                                        <div className={`text-[9px] leading-relaxed ${active ? 'text-white/60' : 'text-white/40'}`}>{meta.desc}</div>
                                     </button>
                                 );
                             })}
@@ -2223,8 +2572,13 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                             <IdentificationCard size={22} weight="fill" />
                         </button>
                     )}
-                    {/* Toggle Party HUD */}
-                    <button onClick={() => setShowParty(!showParty)} className={`p-2 rounded hover:bg-white/10 active:scale-95 transition-transform ${showParty ? theme.accent : 'opacity-50'}`}>
+                    {/* Toggle Party HUD：聊天室里没有 Party HUD 面板，这个按钮在聊天室视图置灰不可用 */}
+                    <button
+                        onClick={() => setShowParty(!showParty)}
+                        disabled={playSubView === 'chatroom'}
+                        className={`p-2 rounded hover:bg-white/10 active:scale-95 transition-transform ${playSubView === 'chatroom' ? 'opacity-30 cursor-not-allowed' : (showParty ? theme.accent : 'opacity-50')}`}
+                        title={playSubView === 'chatroom' ? '聊天室无队伍面板' : '显示/隐藏队伍面板'}
+                    >
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 0 0 3.741-.479 3 3 0 0 0-4.682-2.72m.94 3.198.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0 1 12 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 0 1 6 18.719m12 0a5.971 5.971 0 0 0-.941-3.197m0 0A5.995 5.995 0 0 0 12 12.75a5.995 5.995 0 0 0-5.058 2.772m0 0a3 3 0 0 0-4.681 2.72 8.986 8.986 0 0 0 3.74.477m.94-3.197a5.971 5.971 0 0 0-.94 3.197M15 6.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm6 3a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Zm-13.5 0a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Z" /></svg>
                     </button>
                     {/* 剧情/聊天室切换：不是小功能入口，是跟主线并列的全屏视图切换。聊天室=皮下吐槽 */}
@@ -2245,6 +2599,177 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
         </div>
     );
 
+    // 系统菜单/数值表/删除确认三个 Modal 及归档/总结全屏遮罩：剧情视图和聊天室视图都要能弹出，
+    // 提出来公用一份，避免之前聊天室视图 return 分支里完全没挂这些 Modal，点顶栏按钮没反应的问题。
+    const renderSharedModalsAndOverlays = () => (
+        <>
+            {/* System Menu Modal */}
+            <Modal isOpen={showSystemMenu} title="系统菜单" onClose={() => setShowSystemMenu(false)}>
+                <div className="space-y-4">
+                    {/* UI Settings */}
+                    <div className="bg-slate-100 p-3 rounded-xl">
+                        <label className="text-xs text-slate-500 font-bold mb-3 block border-b border-slate-200 pb-1">阅读设置 (Display)</label>
+                        <div className="space-y-3">
+                            <div className="flex items-center gap-3">
+                                <span className="text-xs text-slate-400 w-8">字号</span>
+                                <input
+                                    type="range"
+                                    min="12"
+                                    max="24"
+                                    step="1"
+                                    value={uiSettings.fontSize}
+                                    onChange={e => setUiSettings({...uiSettings, fontSize: parseInt(e.target.value)})}
+                                    className="flex-1 h-1.5 bg-slate-300 rounded-lg appearance-none cursor-pointer accent-orange-500"
+                                />
+                                <span className="text-xs font-mono text-slate-600 w-6 text-right">{uiSettings.fontSize}</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <span className="text-xs text-slate-400 w-8">颜色</span>
+                                <input
+                                    type="color"
+                                    value={uiSettings.color || '#e5e5e5'}
+                                    onChange={e => setUiSettings({...uiSettings, color: e.target.value})}
+                                    className="w-full h-8 rounded cursor-pointer bg-white border border-slate-200 p-0.5"
+                                />
+                            </div>
+                            <button onClick={() => setUiSettings({ fontSize: 14, color: '' })} className="w-full py-1.5 bg-white border border-slate-200 text-slate-500 text-xs rounded-lg active:scale-95 transition-transform">恢复默认</button>
+                        </div>
+                    </div>
+
+                    {/* 玩法设置 */}
+                    <div className="bg-slate-100 p-3 rounded-xl">
+                        <label className="text-xs text-slate-500 font-bold mb-3 block border-b border-slate-200 pb-1">玩法设置 (Gameplay)</label>
+                        <div className="text-[10px] text-slate-400 mb-2 flex items-center justify-between">
+                            <span>规则系统：{playRuleSystemDef.name}</span>
+                            {activeGame.characterSheets && Object.keys(activeGame.characterSheets).length > 0 && (
+                                <button onClick={() => setShowSheetsInMenu(v => !v)} className="text-slate-500 underline">{showSheetsInMenu ? '收起数值表' : '查看数值表'}</button>
+                            )}
+                        </div>
+                        <div className="text-[10px] text-slate-400 mb-2">DM 风格：{DM_STYLE_META[activeGame.dmStyle || 'default'].label}（开团后不可更改）</div>
+                        <div className="text-[10px] text-slate-400 mb-2">叙事节奏：{(activeGame.worldPacing || 'crisis') === 'open' ? '开放式冒险' : '危机驱动'}（开团后不可更改）</div>
+                        {showSheetsInMenu && activeGame.characterSheets && (
+                            <div className="mb-3 space-y-1.5">
+                                {Object.values(activeGame.characterSheets).map(entry => (
+                                    <div key={entry.name} className="bg-white rounded-lg p-2 text-[10px] text-slate-600 leading-snug">
+                                        <span className="font-bold text-slate-700">{entry.name}</span>
+                                        {' '}{Object.entries(entry.characteristics).map(([k, v]) => `${(playRuleSystemDef.characteristics || []).find(c => c.key === k)?.label.split(' ')[0] || k}${v}`).join(' ')}
+                                        <br />{Object.entries(entry.skills).map(([k, v]) => `${(playRuleSystemDef.skills || []).find(s => s.key === k)?.label.split(' ')[0] || k}${v}`).join('、')}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        <div className="flex items-center justify-between">
+                            <div className="flex flex-col">
+                                <span className="text-sm text-slate-700 font-medium flex items-center gap-1.5"><DiceFive size={16} weight="fill" /> 骰子判定 ({resolveDiceConfig(activeGame).label})</span>
+                                <span className="text-[10px] text-slate-400 mt-0.5">关闭后，每次行动不再自动骰点</span>
+                            </div>
+                            <button
+                                onClick={toggleDice}
+                                role="switch"
+                                aria-checked={!activeGame.diceDisabled}
+                                className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${activeGame.diceDisabled ? 'bg-slate-300' : 'bg-emerald-500'}`}
+                            >
+                                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${activeGame.diceDisabled ? '' : 'translate-x-6'}`}></span>
+                            </button>
+                        </div>
+                        <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-200">
+                            <div className="flex flex-col">
+                                <span className="text-sm text-slate-700 font-medium flex items-center gap-1.5"><ChatCircleDots size={16} weight="fill" /> 聊天室</span>
+                                <span className="text-[10px] text-slate-400 mt-0.5">开启后每回合结束给每个角色各自单独调一次 LLM 生成场外吐槽（皮下吐槽，互不看到对方细节），不进主线剧情；死亡/昏迷角色也能场外发言</span>
+                            </div>
+                            <button
+                                onClick={toggleOoc}
+                                role="switch"
+                                aria-checked={!!activeGame.oocEnabled}
+                                className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${activeGame.oocEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                            >
+                                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${activeGame.oocEnabled ? 'translate-x-6' : ''}`}></span>
+                            </button>
+                        </div>
+                        {activeGame.oocEnabled && (
+                            <div className="flex items-center justify-between mt-2 pl-1">
+                                <span className="text-[10px] text-slate-400">
+                                    生成方式：{(activeGame.oocCallMode || 'individual') === 'batch' ? '一次性生成所有人（省调用，速度快）' : '逐角色独立调用（防串记忆，更准确）'}
+                                </span>
+                                <button
+                                    onClick={toggleOocCallMode}
+                                    className="text-[10px] px-2 py-1 rounded-full bg-slate-100 text-slate-600 font-medium hover:bg-slate-200 shrink-0"
+                                >
+                                    切换为{(activeGame.oocCallMode || 'individual') === 'batch' ? '逐角色独立' : '一次性生成'}
+                                </button>
+                            </div>
+                        )}
+                    </div>
+
+                    <button onClick={handleArchiveAndQuit} className="w-full py-3 bg-emerald-500 text-white font-bold rounded-2xl shadow-lg flex items-center justify-center gap-2">
+                        <FloppyDisk size={18} /> 归档记忆并退出
+                    </button>
+                    <button onClick={handleRestart} className="w-full py-3 bg-orange-500 text-white font-bold rounded-2xl shadow-lg flex items-center justify-center gap-2">
+                        <ArrowsClockwise size={18} /> 重置当前游戏
+                    </button>
+                    <button onClick={handleLeave} className="w-full py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl flex items-center justify-center gap-2">
+                        <DoorOpen size={18} /> 暂时离开 (不归档)
+                    </button>
+                </div>
+            </Modal>
+
+            {/* 角色数值表 Modal：局内一键可见，不用再钻进系统菜单里找 */}
+            <Modal isOpen={showSheetModal} title={`角色数值表 · ${playRuleSystemDef.name}`} onClose={() => setShowSheetModal(false)}>
+                <div className="space-y-2.5">
+                    {activeGame.characterSheets && Object.values(activeGame.characterSheets).map(entry => (
+                        <div key={entry.name} className="bg-slate-100 rounded-xl p-3">
+                            <div className="text-sm font-bold text-slate-700 mb-1.5">{entry.name}</div>
+                            {entry.note && <div className="text-[10px] text-slate-400 mb-2 leading-snug">{entry.note}</div>}
+                            <div className="grid grid-cols-4 gap-1.5 mb-1.5">
+                                {(playRuleSystemDef.characteristics || []).map(c => (
+                                    <div key={c.key} className="flex flex-col items-center bg-white rounded-lg p-1.5 border border-slate-200">
+                                        <span className="text-[8px] text-slate-400 truncate w-full text-center" title={c.label}>{c.label.split(' ')[0]}</span>
+                                        <span className="text-xs font-mono font-bold text-slate-700">{entry.characteristics[c.key] ?? '-'}</span>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="grid grid-cols-3 gap-1.5">
+                                {(playRuleSystemDef.skills || []).map(s => (
+                                    <div key={s.key} className="flex flex-col items-center bg-white rounded-lg p-1.5 border border-slate-200">
+                                        <span className="text-[8px] text-slate-400 truncate w-full text-center" title={s.label}>{s.label.split(' ')[0]}</span>
+                                        <span className="text-xs font-mono font-bold text-slate-700">{entry.skills[s.key] ?? '-'}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </Modal>
+
+            {/* Delete Save Confirm Modal */}
+            <Modal isOpen={!!deleteConfirmId} title="删除存档" onClose={() => setDeleteConfirmId(null)} footer={
+                <div className="flex gap-3 w-full">
+                    <button onClick={() => setDeleteConfirmId(null)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl">取消</button>
+                    <button onClick={confirmDeleteGame} className="flex-1 py-3 bg-red-500 text-white font-bold rounded-2xl shadow-lg shadow-red-200">删除</button>
+                </div>
+            }>
+                <p className="text-sm text-slate-600 text-center py-4">确定要删除这个存档吗？<br/><span className="text-xs text-red-400 mt-1 block">此操作不可恢复。</span></p>
+            </Modal>
+
+            {/* Archive Overlay */}
+            {isArchiving && (
+                <div className="absolute inset-0 bg-black/80 z-50 flex items-center justify-center text-white flex-col gap-4 animate-fade-in">
+                    <div className="w-8 h-8 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
+                    <span className="text-xs tracking-widest font-mono">正在传递记忆...</span>
+                </div>
+            )}
+
+            {/* Auto-Summary Overlay (每 20 条自动总结的全屏反馈) */}
+            {isSummarizing && (
+                <div className="absolute inset-0 bg-black/85 z-50 flex items-center justify-center text-white flex-col gap-5 animate-fade-in px-8 text-center">
+                    <div className="w-10 h-10 border-4 border-purple-400 border-t-transparent rounded-full animate-spin"></div>
+                    <span className="text-sm tracking-widest font-bold">正在总结前文内容…</span>
+                    <span className="text-[11px] opacity-50 font-mono leading-relaxed">归档剧情 · 提炼起因经过结果 · 记录人物关系变化</span>
+                </div>
+            )}
+        </>
+    );
+
     // 3b. 聊天室（皮下吐槽）全屏视图：跟主线剧情并列的独立视图，不是弹窗。风格跟随当前跑团主题
     if (playSubView === 'chatroom') {
         return (
@@ -2262,13 +2787,29 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                     {(activeGame.oocLogs || []).map(o => {
                         const isPlayerMsg = o.charId === '__player__';
                         const isDeadSpeaker = playerDeadCharIds.has(o.charId);
+                        const isSelected = selectedOocIds.has(o.id);
                         return (
-                            <div key={o.id} className={`flex gap-2 ${isPlayerMsg ? 'flex-row-reverse' : ''}`}>
-                                <div className="max-w-[75%]">
+                            <div
+                                key={o.id}
+                                onClick={() => { if (oocSelectMode) toggleSelectOoc(o.id); }}
+                                className={`flex gap-2 ${isPlayerMsg ? 'flex-row-reverse' : ''} ${oocSelectMode ? `cursor-pointer rounded-xl px-1 transition-all ${isSelected ? 'ring-2 ring-purple-400 bg-purple-500/10' : 'hover:bg-white/[0.03]'}` : ''}`}
+                            >
+                                {oocSelectMode && (
+                                    <div className={`shrink-0 self-center w-5 h-5 rounded-full border-2 flex items-center justify-center ${isSelected ? 'bg-purple-500 border-purple-400' : 'border-white/40 bg-black/40'}`}>
+                                        {isSelected && <svg viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3 text-white"><path fillRule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0l-3.5-3.5a1 1 0 1 1 1.4-1.4l2.8 2.79 6.8-6.79a1 1 0 0 1 1.4 0Z" clipRule="evenodd"/></svg>}
+                                    </div>
+                                )}
+                                <div className={`max-w-[75%] ${oocSelectMode ? 'pointer-events-none select-none' : ''}`}>
                                     <div className={`text-[10px] opacity-50 mb-1 ${isPlayerMsg ? 'text-right' : ''}`}>
                                         {o.speakerName}{isDeadSpeaker && ' 💀'}
                                     </div>
-                                    <div className={`text-xs px-3 py-2 rounded-2xl border ${theme.border} ${isPlayerMsg ? `bg-white/10 ${theme.accent} font-medium` : `${theme.cardBg} ${theme.text}`}`}>
+                                    <div
+                                        onPointerDown={() => startOocPress(o.id)}
+                                        onPointerUp={cancelOocPress}
+                                        onPointerLeave={cancelOocPress}
+                                        onPointerCancel={cancelOocPress}
+                                        className={`text-xs px-3 py-2 rounded-2xl border select-none ${theme.border} ${isPlayerMsg ? `bg-white/10 ${theme.accent} font-medium` : `${theme.cardBg} ${theme.text}`}`}
+                                    >
                                         {o.content}
                                     </div>
                                 </div>
@@ -2278,18 +2819,68 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                     {isOocLoading && <p className="text-[10px] opacity-40 text-center animate-pulse">有人在场外吐槽中...</p>}
                 </div>
 
-                <div className={`p-4 pb-[calc(1rem+var(--safe-bottom,0px))] border-t ${theme.border} bg-opacity-90 backdrop-blur shrink-0 z-20 flex gap-2`}>
-                    <input
-                        value={oocInput}
-                        onChange={e => setOocInput(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') handleOocSend(); }}
-                        placeholder="场外吐槽两句..."
-                        className={`flex-1 bg-black/20 border ${theme.border} rounded-xl px-3 py-3 outline-none text-sm placeholder-opacity-30 placeholder-current focus:bg-black/40 transition-colors`}
+                {/* 多选批量操作栏，跟剧情视图的转发操作栏同一套交互，多了个批量删除 */}
+                {oocSelectMode ? (
+                    <div className={`p-4 pb-[calc(1rem+var(--safe-bottom,0px))] border-t ${theme.border} bg-black/50 backdrop-blur shrink-0 z-20 flex items-center gap-2 animate-slide-down`}>
+                        <button onClick={exitOocSelectMode} className="px-4 h-11 rounded-xl border border-white/15 text-sm font-bold text-white/70 active:scale-95 transition-transform">取消</button>
+                        <span className="text-xs text-white/50 flex-1 text-center">已选 {selectedOocIds.size} 条</span>
+                        <button
+                            onClick={handleOocBatchDelete}
+                            disabled={selectedOocIds.size === 0}
+                            className="px-4 h-11 rounded-xl bg-red-500/90 text-white text-sm font-bold active:scale-95 transition-transform disabled:opacity-40"
+                        >
+                            删除
+                        </button>
+                        <button
+                            onClick={handleOocForwardToChat}
+                            disabled={selectedOocIds.size === 0 || isOocForwarding}
+                            className="px-5 h-11 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 text-white text-sm font-bold active:scale-95 transition-transform disabled:opacity-40 flex items-center gap-2 shadow-lg shadow-purple-500/20"
+                        >
+                            {isOocForwarding ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> 转发中...</> : '转发到聊天'}
+                        </button>
+                    </div>
+                ) : (
+                    <div className={`p-4 pb-[calc(1rem+var(--safe-bottom,0px))] border-t ${theme.border} bg-opacity-90 backdrop-blur shrink-0 z-20 flex gap-2`}>
+                        <input
+                            value={oocInput}
+                            onChange={e => setOocInput(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') handleOocSend(); }}
+                            placeholder="场外吐槽两句..."
+                            className={`flex-1 bg-black/20 border ${theme.border} rounded-xl px-3 py-3 outline-none text-sm placeholder-opacity-30 placeholder-current focus:bg-black/40 transition-colors`}
+                        />
+                        <button onClick={handleOocSend} className={`${theme.accent} font-bold text-sm px-4 h-12 bg-white/10 rounded-xl hover:bg-white/20 active:scale-95 transition-all flex items-center justify-center`}>
+                            发送
+                        </button>
+                    </div>
+                )}
+
+                {/* 聊天室消息长按菜单：编辑内容 / 删除消息 / 进入多选，跟主线私聊的交互对齐 */}
+                <Modal isOpen={oocModalType === 'options'} title="消息操作" onClose={() => setOocModalType('none')}>
+                    <div className="space-y-3">
+                        <button onClick={handleOocEnterSelectionMode} className="w-full py-3 bg-slate-50 text-slate-700 font-medium rounded-2xl active:bg-slate-100 transition-colors">
+                            多选 / 批量删除
+                        </button>
+                        <button onClick={handleOocEditStart} className="w-full py-3 bg-slate-50 text-slate-700 font-medium rounded-2xl active:bg-slate-100 transition-colors">
+                            编辑内容
+                        </button>
+                        <button onClick={handleOocDelete} className="w-full py-3 bg-red-50 text-red-500 font-medium rounded-2xl active:bg-red-100 transition-colors">
+                            删除消息
+                        </button>
+                    </div>
+                </Modal>
+
+                <Modal
+                    isOpen={oocModalType === 'edit'} title="编辑内容" onClose={() => setOocModalType('none')}
+                    footer={<><button onClick={() => setOocModalType('none')} className="flex-1 py-3 bg-slate-100 rounded-2xl">取消</button><button onClick={confirmOocEdit} className="flex-1 py-3 bg-purple-500 text-white font-bold rounded-2xl">保存</button></>}
+                >
+                    <textarea
+                        value={editOocContent}
+                        onChange={e => setEditOocContent(e.target.value)}
+                        className="w-full h-32 bg-slate-50 border border-slate-200 rounded-2xl p-3 text-sm text-slate-800 outline-none resize-none"
                     />
-                    <button onClick={handleOocSend} className={`${theme.accent} font-bold text-sm px-4 h-12 bg-white/10 rounded-xl hover:bg-white/20 active:scale-95 transition-all flex items-center justify-center`}>
-                        发送
-                    </button>
-                </div>
+                </Modal>
+
+                {renderSharedModalsAndOverlays()}
             </div>
         );
     }
@@ -2496,7 +3087,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                             <div className="flex flex-col items-end animate-slide-up group relative">
                                 <div className="flex items-center gap-2 mb-1">
                                     <span className={`text-[10px] font-bold opacity-60`}>{log.speakerName}</span>
-                                    {log.diceRoll && (
+                                    {log.diceRoll && log.id !== pendingRollLogId && (
                                         <span className={`text-[10px] px-1.5 rounded font-mono ${diceTierBadgeClass(log.diceRoll)}`}>
                                             <DiceFive size={12} weight="fill" className="inline" /> {log.diceRoll.result}{log.diceRoll.check ? ` ${log.diceRoll.check}` : ''}
                                         </span>
@@ -2505,7 +3096,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                                 <div className={`px-4 py-2 rounded-2xl rounded-tr-none text-sm bg-orange-600 text-white shadow-md max-w-[85%]`}>
                                     {log.content}
                                 </div>
-                                {diceOutcomeLine(log.diceRoll) && (
+                                {log.id !== pendingRollLogId && diceOutcomeLine(log.diceRoll) && (
                                     <span className="mt-1 text-[10px] opacity-50">→ {diceOutcomeLine(log.diceRoll)}</span>
                                 )}
                                 <button onClick={() => handleRollbackLog(i)} className="mt-1 text-[9px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity hover:underline">回退</button>
@@ -2630,7 +3221,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                         placeholder="你打算做什么..."
                         className={`flex-1 bg-black/20 border ${theme.border} rounded-xl px-3 py-3 outline-none text-sm placeholder-opacity-30 placeholder-current resize-none h-12 leading-tight focus:bg-black/40 transition-colors`}
                     />
-                    <button onClick={() => handleAction(userInput)} className={`${theme.accent} font-bold text-sm px-4 h-12 bg-white/10 rounded-xl hover:bg-white/20 active:scale-95 transition-all flex items-center justify-center`}>
+                    <button disabled={isTyping} onClick={() => handleAction(userInput)} className={`${theme.accent} font-bold text-sm px-4 h-12 bg-white/10 rounded-xl hover:bg-white/20 active:scale-95 transition-all flex items-center justify-center disabled:opacity-40`}>
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg>
                     </button>
                 </div>
@@ -2638,168 +3229,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                 )}
             </div>
 
-            {/* System Menu Modal */}
-            <Modal isOpen={showSystemMenu} title="系统菜单" onClose={() => setShowSystemMenu(false)}>
-                <div className="space-y-4">
-                    {/* UI Settings */}
-                    <div className="bg-slate-100 p-3 rounded-xl">
-                        <label className="text-xs text-slate-500 font-bold mb-3 block border-b border-slate-200 pb-1">阅读设置 (Display)</label>
-                        <div className="space-y-3">
-                            <div className="flex items-center gap-3">
-                                <span className="text-xs text-slate-400 w-8">字号</span>
-                                <input 
-                                    type="range" 
-                                    min="12" 
-                                    max="24" 
-                                    step="1"
-                                    value={uiSettings.fontSize} 
-                                    onChange={e => setUiSettings({...uiSettings, fontSize: parseInt(e.target.value)})} 
-                                    className="flex-1 h-1.5 bg-slate-300 rounded-lg appearance-none cursor-pointer accent-orange-500" 
-                                />
-                                <span className="text-xs font-mono text-slate-600 w-6 text-right">{uiSettings.fontSize}</span>
-                            </div>
-                            <div className="flex items-center gap-3">
-                                <span className="text-xs text-slate-400 w-8">颜色</span>
-                                <input 
-                                    type="color" 
-                                    value={uiSettings.color || '#e5e5e5'} 
-                                    onChange={e => setUiSettings({...uiSettings, color: e.target.value})} 
-                                    className="w-full h-8 rounded cursor-pointer bg-white border border-slate-200 p-0.5" 
-                                />
-                            </div>
-                            <button onClick={() => setUiSettings({ fontSize: 14, color: '' })} className="w-full py-1.5 bg-white border border-slate-200 text-slate-500 text-xs rounded-lg active:scale-95 transition-transform">恢复默认</button>
-                        </div>
-                    </div>
-
-                    {/* 玩法设置 */}
-                    <div className="bg-slate-100 p-3 rounded-xl">
-                        <label className="text-xs text-slate-500 font-bold mb-3 block border-b border-slate-200 pb-1">玩法设置 (Gameplay)</label>
-                        <div className="text-[10px] text-slate-400 mb-2 flex items-center justify-between">
-                            <span>规则系统：{playRuleSystemDef.name}</span>
-                            {activeGame.characterSheets && Object.keys(activeGame.characterSheets).length > 0 && (
-                                <button onClick={() => setShowSheetsInMenu(v => !v)} className="text-slate-500 underline">{showSheetsInMenu ? '收起数值表' : '查看数值表'}</button>
-                            )}
-                        </div>
-                        {showSheetsInMenu && activeGame.characterSheets && (
-                            <div className="mb-3 space-y-1.5">
-                                {Object.values(activeGame.characterSheets).map(entry => (
-                                    <div key={entry.name} className="bg-white rounded-lg p-2 text-[10px] text-slate-600 leading-snug">
-                                        <span className="font-bold text-slate-700">{entry.name}</span>
-                                        {' '}{Object.entries(entry.characteristics).map(([k, v]) => `${(playRuleSystemDef.characteristics || []).find(c => c.key === k)?.label.split(' ')[0] || k}${v}`).join(' ')}
-                                        <br />{Object.entries(entry.skills).map(([k, v]) => `${(playRuleSystemDef.skills || []).find(s => s.key === k)?.label.split(' ')[0] || k}${v}`).join('、')}
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                        <div className="flex items-center justify-between">
-                            <div className="flex flex-col">
-                                <span className="text-sm text-slate-700 font-medium flex items-center gap-1.5"><DiceFive size={16} weight="fill" /> 骰子判定 ({resolveDiceConfig(activeGame).label})</span>
-                                <span className="text-[10px] text-slate-400 mt-0.5">关闭后，每次行动不再自动骰点</span>
-                            </div>
-                            <button
-                                onClick={toggleDice}
-                                role="switch"
-                                aria-checked={!activeGame.diceDisabled}
-                                className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${activeGame.diceDisabled ? 'bg-slate-300' : 'bg-emerald-500'}`}
-                            >
-                                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${activeGame.diceDisabled ? '' : 'translate-x-6'}`}></span>
-                            </button>
-                        </div>
-                        <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-200">
-                            <div className="flex flex-col">
-                                <span className="text-sm text-slate-700 font-medium flex items-center gap-1.5"><ChatCircleDots size={16} weight="fill" /> 聊天室</span>
-                                <span className="text-[10px] text-slate-400 mt-0.5">开启后每回合结束给每个角色各自单独调一次 LLM 生成场外吐槽（皮下吐槽，互不看到对方细节），不进主线剧情；死亡/昏迷角色也能场外发言</span>
-                            </div>
-                            <button
-                                onClick={toggleOoc}
-                                role="switch"
-                                aria-checked={!!activeGame.oocEnabled}
-                                className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${activeGame.oocEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                            >
-                                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${activeGame.oocEnabled ? 'translate-x-6' : ''}`}></span>
-                            </button>
-                        </div>
-                        {activeGame.oocEnabled && (
-                            <div className="flex items-center justify-between mt-2 pl-1">
-                                <span className="text-[10px] text-slate-400">
-                                    生成方式：{(activeGame.oocCallMode || 'individual') === 'batch' ? '一次性生成所有人（省调用，速度快）' : '逐角色独立调用（防串记忆，更准确）'}
-                                </span>
-                                <button
-                                    onClick={toggleOocCallMode}
-                                    className="text-[10px] px-2 py-1 rounded-full bg-slate-100 text-slate-600 font-medium hover:bg-slate-200 shrink-0"
-                                >
-                                    切换为{(activeGame.oocCallMode || 'individual') === 'batch' ? '逐角色独立' : '一次性生成'}
-                                </button>
-                            </div>
-                        )}
-                    </div>
-
-                    <button onClick={handleArchiveAndQuit} className="w-full py-3 bg-emerald-500 text-white font-bold rounded-2xl shadow-lg flex items-center justify-center gap-2">
-                        <FloppyDisk size={18} /> 归档记忆并退出
-                    </button>
-                    <button onClick={handleRestart} className="w-full py-3 bg-orange-500 text-white font-bold rounded-2xl shadow-lg flex items-center justify-center gap-2">
-                        <ArrowsClockwise size={18} /> 重置当前游戏
-                    </button>
-                    <button onClick={handleLeave} className="w-full py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl flex items-center justify-center gap-2">
-                        <DoorOpen size={18} /> 暂时离开 (不归档)
-                    </button>
-                </div>
-            </Modal>
-
-            {/* 角色数值表 Modal：局内一键可见，不用再钻进系统菜单里找 */}
-            <Modal isOpen={showSheetModal} title={`角色数值表 · ${playRuleSystemDef.name}`} onClose={() => setShowSheetModal(false)}>
-                <div className="space-y-2.5">
-                    {activeGame.characterSheets && Object.values(activeGame.characterSheets).map(entry => (
-                        <div key={entry.name} className="bg-slate-100 rounded-xl p-3">
-                            <div className="text-sm font-bold text-slate-700 mb-1.5">{entry.name}</div>
-                            {entry.note && <div className="text-[10px] text-slate-400 mb-2 leading-snug">{entry.note}</div>}
-                            <div className="grid grid-cols-4 gap-1.5 mb-1.5">
-                                {(playRuleSystemDef.characteristics || []).map(c => (
-                                    <div key={c.key} className="flex flex-col items-center bg-white rounded-lg p-1.5 border border-slate-200">
-                                        <span className="text-[8px] text-slate-400 truncate w-full text-center" title={c.label}>{c.label.split(' ')[0]}</span>
-                                        <span className="text-xs font-mono font-bold text-slate-700">{entry.characteristics[c.key] ?? '-'}</span>
-                                    </div>
-                                ))}
-                            </div>
-                            <div className="grid grid-cols-3 gap-1.5">
-                                {(playRuleSystemDef.skills || []).map(s => (
-                                    <div key={s.key} className="flex flex-col items-center bg-white rounded-lg p-1.5 border border-slate-200">
-                                        <span className="text-[8px] text-slate-400 truncate w-full text-center" title={s.label}>{s.label.split(' ')[0]}</span>
-                                        <span className="text-xs font-mono font-bold text-slate-700">{entry.skills[s.key] ?? '-'}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </Modal>
-
-            {/* Delete Save Confirm Modal */}
-            <Modal isOpen={!!deleteConfirmId} title="删除存档" onClose={() => setDeleteConfirmId(null)} footer={
-                <div className="flex gap-3 w-full">
-                    <button onClick={() => setDeleteConfirmId(null)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl">取消</button>
-                    <button onClick={confirmDeleteGame} className="flex-1 py-3 bg-red-500 text-white font-bold rounded-2xl shadow-lg shadow-red-200">删除</button>
-                </div>
-            }>
-                <p className="text-sm text-slate-600 text-center py-4">确定要删除这个存档吗？<br/><span className="text-xs text-red-400 mt-1 block">此操作不可恢复。</span></p>
-            </Modal>
-
-            {/* Archive Overlay */}
-            {isArchiving && (
-                <div className="absolute inset-0 bg-black/80 z-50 flex items-center justify-center text-white flex-col gap-4 animate-fade-in">
-                    <div className="w-8 h-8 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
-                    <span className="text-xs tracking-widest font-mono">正在传递记忆...</span>
-                </div>
-            )}
-
-            {/* Auto-Summary Overlay (每 20 条自动总结的全屏反馈) */}
-            {isSummarizing && (
-                <div className="absolute inset-0 bg-black/85 z-50 flex items-center justify-center text-white flex-col gap-5 animate-fade-in px-8 text-center">
-                    <div className="w-10 h-10 border-4 border-purple-400 border-t-transparent rounded-full animate-spin"></div>
-                    <span className="text-sm tracking-widest font-bold">正在总结前文内容…</span>
-                    <span className="text-[11px] opacity-50 font-mono leading-relaxed">归档剧情 · 提炼起因经过结果 · 记录人物关系变化</span>
-                </div>
-            )}
+            {renderSharedModalsAndOverlays()}
         </div>
     );
 };

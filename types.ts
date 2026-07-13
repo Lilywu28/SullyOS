@@ -2987,8 +2987,16 @@ export interface GameSession {
     // 归档模式：'auto' 满20条自动总结并送进角色 chatapp；'manual' 自动总结但不送，仅手动归档时送。
     // 旧存档无此字段，按 'manual' 处理（不污染旧角色的聊天上下文）。
     archiveMode?: 'auto' | 'manual';
+    // DM 风格：'default'（硬核沉浸，原有提示词） | 'comedy'（轻松喜剧） | 'horror'（恐怖惊悚） | 'romance'（浪漫风格）。
+    // 决定 GM 指令里"去玩家中心/判定与代价"这部分怎么写，从而影响冲突强度、失败代价、氛围基调。
+    // 旧存档无此字段按 'default' 处理。
+    dmStyle?: 'default' | 'comedy' | 'horror' | 'romance';
     // 规则系统：'freeform'（自由叙事，默认，兼容旧存档）| 'coc7' | 'dnd5e'
     ruleSystem?: 'freeform' | 'coc7' | 'dnd5e';
+    // 世界观生成时选的叙事节奏：'crisis'（危机驱动，默认）| 'open'（开放式冒险）。
+    // 只影响开团前世界观生成的 prompt，不参与后续每回合 GM 指令；存下来是为了让玩家在游玩中能回看当时选的是哪种。
+    // 旧存档无此字段按 'crisis' 处理（迁移前唯一存在的模式）。
+    worldPacing?: 'crisis' | 'open';
     // 自定义骰子机制（仅 freeform 可配，coc7/dnd5e 使用各自固定机制）
     diceConfig?: { count: number; sides: number; successMode: 'high-good' | 'low-good'; label: string };
     // 三种规则系统均可选启用：按本场剧本单独生成的逐角色属性/技能数值表，key 为 charId（玩家本人用 '__player__'）。
