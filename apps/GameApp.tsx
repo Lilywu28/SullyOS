@@ -7,7 +7,7 @@ import { ContextBuilder } from '../utils/context';
 import { extractContent, extractJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { ChatParser } from '../utils/chatParser';
-import { RuleSystemId, DiceConfig, RULE_SYSTEMS, RULE_SYSTEM_LIST, DICE_PRESETS, DEFAULT_DICE_CONFIG, FREEFORM_BASIC_SKILLS, rollDice, rollFlavorFor, formatCharacterSheetsBlock, buildCharacterSheetPrompt, buildFreeformCharacterSheetPrompt, computeCheckTier, findSkillValueByName, CheckTier, CHECK_TIER_LABELS, getCharacterVitals, computeVitalState, computeSanState, VITAL_STATE_LABELS, SAN_STATE_LABELS, VitalState, SanState } from '../utils/trpgRuleSystems';
+import { RuleSystemId, DiceConfig, RULE_SYSTEMS, RULE_SYSTEM_LIST, DICE_PRESETS, DEFAULT_DICE_CONFIG, FREEFORM_BASIC_SKILLS, rollDice, rollFlavorFor, toCocPercentile, buildCheckOutcomePreview, formatCharacterSheetsBlock, buildCharacterSheetPrompt, buildFreeformCharacterSheetPrompt, computeCheckTier, findSkillValueByName, CheckTier, CHECK_TIER_LABELS, getCharacterVitals, computeVitalState, computeSanState, VITAL_STATE_LABELS, SAN_STATE_LABELS, VitalState, SanState } from '../utils/trpgRuleSystems';
 import Modal from '../components/os/Modal';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { Planet, RocketLaunch, Lightning, LockSimple, DiceFive, Toolbox, FloppyDisk, ArrowsClockwise, DoorOpen, IdentificationCard, Eye, SkullIcon } from '@phosphor-icons/react';
@@ -1287,7 +1287,8 @@ ${recentOoc}
                 currentRoll = rollDice(diceCfg);
                 setLastRoll(currentRoll);
                 partyRolls = players.filter(p => getVitals(p.id).health > 0).map(p => ({ id: p.id, name: p.name, roll: rollDice(diceCfg) }));
-                addToast('全员已骰点，GM 正在推演...', 'info');
+                const rollSummary = [`${userProfile.name}:${currentRoll}`, ...partyRolls.map(r => `${r.name}:${r.roll}`)].join(' / ');
+                addToast(`全员已骰点 → ${rollSummary}`, 'info');
             }
 
             // Standard Action: Append user log
@@ -1303,16 +1304,17 @@ ${recentOoc}
             if (currentRoll !== null) setPendingRollLogId(userLogId);
 
             const updatedLogs = [...activeGame.logs, userLog];
-            updatedGame = { ...activeGame, logs: updatedLogs, lastPlayedAt: Date.now(), suggestedActions: [] };
+            // 队友骰点跟玩家动作同一时刻落库（pendingPartyRolls），这样 reroll 才能原样复用同一批数字，
+            // 不用"每次重roll队友都换新点数"这种奇怪的体验——玩家自己的骰点已经存在 userLog.diceRoll 里了。
+            updatedGame = { ...activeGame, logs: updatedLogs, lastPlayedAt: Date.now(), suggestedActions: [], pendingPartyRolls: currentRoll !== null ? partyRolls : undefined };
             // 函数式更新防止竞态（快速连点时 activeGame 可能已过期）
             setActiveGame(prev => (prev?.id === gameId ? updatedGame : prev));
             await DB.saveGame(updatedGame);
             contextLogs = updatedLogs;
         } else {
-            // 重新推演（多为"AI 判定结果与骰点/数值不符"报错后点右下角按钮）：
-            // 玩家本人的骰点必须原样保留（不能悄悄换一个新数字再判一次），从上一条 player/system log 里找回来；
-            // 队友的骰点在上次失败的那轮从没存档过（报错发生在角色发言生成之前），只能重投一次——
-            // 这不影响体验，因为上次失败的队友骰点本来就没在气泡里展示过。
+            // 重新推演：玩家和队友本回合的骰点都必须原样保留（不能悄悄换一批新数字再判一次）——
+            // 玩家的从上一条 player/system log 的 diceRoll 里找回来，队友的从存档的 pendingPartyRolls 里找回来。
+            // 兜底：老存档没有 pendingPartyRolls 字段时才重投一次，避免直接崩掉。
             const lastActionLog = [...contextLogs].reverse().find(l => l.role === 'player' || l.role === 'system');
             if (lastActionLog) {
                 userLogId = lastActionLog.id;
@@ -1320,9 +1322,8 @@ ${recentOoc}
                     currentRoll = lastActionLog.diceRoll.result;
                     setPendingRollLogId(userLogId);
                     if (!activeGame.diceDisabled) {
-                        partyRolls = players.filter(p => getVitals(p.id).health > 0).map(p => ({ id: p.id, name: p.name, roll: rollDice(diceCfg) }));
-                        const rollSummary = partyRolls.map(r => `${r.name}:${r.roll}`).join(' / ');
-                        if (rollSummary) addToast(`队友重新判定 → ${rollSummary}`, 'info');
+                        partyRolls = activeGame.pendingPartyRolls
+                            ?? players.filter(p => getVitals(p.id).health > 0).map(p => ({ id: p.id, name: p.name, roll: rollDice(diceCfg) }));
                     }
                 }
             }
@@ -1380,11 +1381,17 @@ ${recentOoc}
             const dmStyle: DmStyle = activeGame.dmStyle || 'default';
             // [新] 全员先骰后判：本回合每个人（玩家+全体队友）都已经先投好了骰子，具体哪些点数真正构成一次检定、
             // 用哪个技能裁定，交给这同一次生成来决定——省掉一次单独"是否需要判定"的预调用。
-            const partyRollLines = [
-                `${userProfile.name}: ${currentRoll}（${rollFlavorFor(diceCfg, currentRoll ?? 0)}）`,
-                ...partyRolls.map(r => `${r.name}: ${r.roll}（${rollFlavorFor(diceCfg, r.roll)}）`)
-            ].join('\n- ');
             const isDnd = (activeGame.ruleSystem || 'freeform') === 'dnd5e';
+            // dnd5e 用原始骰子点数（点数越高越好，跟属性加值直接相加比 DC，DC 必须由 AI 判断，没法穷举）；
+            // freeform/coc7 没有 DC，成败是确定的算术题——直接把这个人每项技能对应的判定结果都提前算好
+            // 摆出来（buildCheckOutcomePreview），AI 只需要挑技能抄结果，不再自己比较骰点和数值。
+            const describeRoll = (id: string, name: string, roll: number) => isDnd
+                ? `${name}: ${roll}（${rollFlavorFor(diceCfg, roll)}）`
+                : `${name}: ${buildCheckOutcomePreview(ruleSystemDef, diceCfg, roll, activeGame.characterSheets?.[id])}`;
+            const partyRollLines = [
+                describeRoll('__player__', userProfile.name, currentRoll ?? 0),
+                ...partyRolls.map(r => describeRoll(r.id, r.name, r.roll))
+            ].join('\n- ');
             const rollInstruction = currentRoll
                 ? `\n### 本回合判定\n本回合所有人都先投好了一次 ${diceCfg.label}（不代表都要用，是否采纳由你判断）：\n- ${partyRollLines}\n\n${ruleSystemDef.checkInstruction({ hasSheet })}\n**判定采纳规则（重要）**：不是每个人的骰点都要用——只有当某个角色本回合的行动/发言构成一次**有实际风险或冲突的尝试**（如说服、潜行、战斗、体能挑战、关键社交博弈）时，才把 TA 对应的骰点当作一次正式检定来裁定成败；纯叙事性动作（走路、闲聊、观察无风险场景）不需要判定，直接顺其自然描写，对应骰点忽略不用即可。如果本回合出现明显的冲突/对抗事件，请优先针对冲突双方或关键行动方进行判定。请把你实际采纳为检定的每一项，按输出格式里的 \`checks\` 数组给出：说明用的是谁的骰点、判定用了哪个技能/属性${isDnd ? '、这次检定的难度等级(DC)' : ''}、是否成功、以及简短的结果代价；没被采纳为检定的人不需要出现在 \`checks\` 里。\n`
                 : (activeGame.diceDisabled
@@ -1506,8 +1513,10 @@ ${buildGmStyleSection(dmStyle)}
             const rollByCharId: Record<string, number> = { __player__: currentRoll ?? -1 };
             for (const r of partyRolls) rollByCharId[r.id] = r.roll;
             // AI 在写剧情的同时也顺手把成败算了一遍（它手上有骰点+数值，这一步只是算术）。
-            // 但存档/UI 展示的判定结果不采信 AI 自报的成败——用同样的骰点+角色数值+（DnD的）DC 机械重算一遍作为权威结果；
-            // 如果两者对不上（AI 算错了），直接报错让这一回合作废，用户重新推演即可，不把不一致的结果落库。
+            // 但存档/UI 展示的判定结果不采信 AI 自报的成败——用同样的骰点+角色数值+（DnD的）DC 机械重算一遍作为权威结果。
+            // coc7/freeform 没有 DC，本回合判定结果已经在 prompt 里以预览表的形式提前算好给 AI 抄了，
+            // 这里直接采信机械重算结果即可，不再跟 AI 自报的成败比对/报错——比对只在 dnd5e 上保留，
+            // 因为 DC 是 AI 现场判断的，没法穷举预演，算错了还是要让用户点重roll。
             const checkByCharId: Record<string, { skill?: string; success?: boolean; outcome?: string; tier?: CheckTier }> = {};
             if (Array.isArray(res?.checks)) {
                 for (const c of res.checks) {
@@ -1525,9 +1534,11 @@ ${buildGmStyleSection(dmStyle)}
                     const sheet = activeGame.characterSheets?.[matched];
                     const skillValue = findSkillValueByName(ruleSystemDef, sheet, c.skill);
                     const mechanical = computeCheckTier(ruleSystemDef, diceCfg, roll, skillValue, c.target);
-                    const aiSuccess = c.success !== false;
-                    if (aiSuccess !== mechanical.success) {
-                        throw new Error(`AI 判定结果与骰点/数值不符（${c.skill || '未知判定'}），点击右下角 🔄 按钮重新生成`);
+                    if (isDnd) {
+                        const aiSuccess = c.success !== false;
+                        if (aiSuccess !== mechanical.success) {
+                            throw new Error(`AI 判定结果与骰点/数值不符（${c.skill || '未知判定'}），点击右下角 🔄 按钮重新生成`);
+                        }
                     }
                     checkByCharId[matched] = { skill: c.skill, success: mechanical.success, outcome: c.outcome || mechanical.label, tier: mechanical.tier };
                 }
@@ -1631,7 +1642,8 @@ ${buildGmStyleSection(dmStyle)}
                 status: newStatus,
                 characterVitals: newVitals,
                 deadCharIds: newDeadCharIds,
-                suggestedActions: res?.suggested_actions || []
+                suggestedActions: res?.suggested_actions || [],
+                pendingPartyRolls: undefined // 本回合已经成功推进，缓存的队友骰点用完即清，下一回合重新投
             };
 
             setActiveGame(prev => (prev?.id === gameId ? finalGame : prev));
