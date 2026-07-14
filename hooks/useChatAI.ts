@@ -303,7 +303,7 @@ export async function evaluateEmotionBackground(
     userProfile: UserProfile,
     mainSystemPrompt: string,
     apiMessages: Array<{ role: string; content: any }>,
-    api: { baseUrl: string; apiKey: string; model: string }
+    api: { baseUrl: string; apiKey: string; model: string; stream?: boolean }
 ): Promise<string | null> {
     try {
         const ambientSection = shouldRequestAmbient(charData.id) ? buildAmbientEvalSection(charData) : '';
@@ -325,7 +325,11 @@ export async function evaluateEmotionBackground(
                 // 显式给足输出额度: 部分代理不传 max_tokens 时默认很小 (1k~2k), eval 的
                 // injection+innerState 很长, 会被截断成半截 JSON → buff 静默丢失.
                 max_tokens: 8000,
-                stream: false
+                // 跟随全局流式开关（响应由 safeFetchJson 透明拼装，下游 JSON 解析不变）。
+                // 好处: ①评估动辄生成 4~5k token、跑 30~46s，非流式最容易撞网关超时；
+                // ②中转若按流式/非流式分渠道池，评估与主聊天落同一池，行为可对比。
+                stream: !!api.stream,
+                ...(api.stream ? { stream_options: { include_usage: true } } : {}),
             })
         }, 2, 0, { appName: '消息', charId: charData.id, charName: charData.name, purpose: '情绪评估' });
 
@@ -485,9 +489,10 @@ export const useChatAI = ({
                 try { await ActiveMsgStore.clearPendingEmotionEval(charIdAtMount); } catch { /* ignore */ }
                 return;
             }
+            // 评估跟随全局流式开关（与 triggerAI 路径同口径；专用情绪 API 自带 stream 时以它为准）
             const emotionApi = (char.emotionConfig.api?.baseUrl)
-                ? char.emotionConfig.api
-                : { baseUrl: deps.apiConfig.baseUrl, apiKey: deps.apiConfig.apiKey, model: deps.apiConfig.model };
+                ? { ...char.emotionConfig.api, stream: (char.emotionConfig.api as any).stream ?? !!(deps.apiConfig.stream ?? false) }
+                : { baseUrl: deps.apiConfig.baseUrl, apiKey: deps.apiConfig.apiKey, model: deps.apiConfig.model, stream: !!(deps.apiConfig.stream ?? false) };
 
             try {
                 // 重新从 DB 拉 history (push msg 此刻已经在 DB 里, activeMsgRuntime 在 dispatch
@@ -750,10 +755,12 @@ export const useChatAI = ({
             //      且不会跟客户端 eval 双跑双扣费. 见下方 instant 分支 + worker/instant-push + activeMsgRuntime.
             const emotionEvalEnabled = !!(!promptBuildSkipped && !isEmotionEvalSkipped() && isScheduleFeatureOn(char) && char.emotionConfig?.enabled);
             const instantOn = isInstantConfigReady();
+            // 评估跟随全局流式开关（专用情绪 API 自带 stream 字段时以它为准）
+            const evalStream: boolean = !!((effectiveApi as any).stream ?? apiConfig.stream ?? false);
             const emotionApi = emotionEvalEnabled
                 ? ((char.emotionConfig!.api?.baseUrl)
-                    ? char.emotionConfig!.api!
-                    : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model })
+                    ? { ...char.emotionConfig!.api!, stream: (char.emotionConfig!.api as any).stream ?? evalStream }
+                    : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model, stream: evalStream })
                 : null;
             // 本地路径的情绪评估不在这里立刻发射，改为「主请求发出 ~1.5s 后」再发（见下方
             // 主 fetch 前的 setTimeout）。原因（2026-07 实测日志）：便宜中转普遍按 key 串行/
