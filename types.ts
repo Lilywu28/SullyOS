@@ -134,6 +134,18 @@ export interface OSTheme {
   chatHideHeaderBuffs?: boolean;
 }
 
+/** 聊天细节微调的 7 个字段（外观 App「聊天细节微调」区块），可整组按角色覆盖。
+ *  与 OSTheme 同名字段一一对应，经 utils/chatFineTuneCss.ts 生成 CSS。 */
+export type ChatFineTuneFields = Pick<OSTheme,
+  'chatAvatarVisibility' | 'chatAvatarAlign' | 'chatAvatarOffsetY' |
+  'chatBubbleFontSize' | 'chatBubbleLineHeight' | 'chatBubbleIndent' | 'chatSnapToEdge'>;
+
+/** 角色级「聊天装扮」覆盖：enabled=true 才生效；生效时已定义的字段逐个覆盖全局，
+ *  未定义的字段跟随全局（合并规则见 utils/chatFineTuneCss.ts 的 mergeChatFineTune）。 */
+export interface ChatFineTuneOverride extends ChatFineTuneFields {
+  enabled?: boolean;
+}
+
 export interface AppearancePreset {
   id: string;
   name: string;
@@ -2077,6 +2089,11 @@ export interface CharacterProfile {
   impression?: UserImpression;
 
   bubbleStyle?: string;
+  /** 聊天细节微调的角色级覆盖（聊天内「＋」→「聊天装扮」）。
+   *  enabled=true 时已定义的字段逐个覆盖全局 OSTheme 同名设置，未定义的字段继续跟随全局；
+   *  enabled 为 false/undefined 或整个字段缺省 = 完全跟随全局（现状零变化）。
+   *  属美化类本地偏好：随完整备份走，但角色卡分享时剥离（见 utils/characterCard.ts）。 */
+  chatFineTune?: ChatFineTuneOverride;
   chatBackground?: string;
   contextLimit?: number;
   hideSystemLogs?: boolean; 
@@ -2414,6 +2431,10 @@ export interface UserProfile {
     name: string;
     avatar: string;
     bio: string;
+    /** 分角色聊天头像（档案 App 设置）：charId → 头像（http(s) URL 或 data:image）。
+     *  私聊里「你」的头像取 perCharAvatars[charId] || avatar（上面的整体头像作宏观默认）；
+     *  群聊/其他场合仍用整体头像。删角色留下的孤儿键无害，读取端永远按当前 charId 取。 */
+    perCharAvatars?: Record<string, string>;
     /**
      * 用户本人接入「彼方」的状态：捏的 chibi、此刻所在房间、在干嘛。可随时改。
      * enabled=false（登出）时，聊天里给角色的"用户在彼方"提示词随之消失。
