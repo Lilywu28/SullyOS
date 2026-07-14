@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildChatFineTuneCss } from './chatFineTuneCss';
+import { buildChatFineTuneCss, mergeChatFineTune, CHAT_FINE_TUNE_KEYS } from './chatFineTuneCss';
 
 // 聊天细节微调 CSS 生成器：全默认零输出；各旋钮生成的选择器与社区已验证版本一致。
 
@@ -37,6 +37,15 @@ describe('buildChatFineTuneCss', () => {
         expect(css).toContain('[class*="text-[13px]"]');
     });
 
+    it('合并结果直接可喂给 buildChatFineTuneCss（角色覆盖后按覆盖值出 CSS）', () => {
+        const css = buildChatFineTuneCss(mergeChatFineTune(
+            { chatBubbleFontSize: 14 },
+            { enabled: true, chatBubbleFontSize: 16 },
+        ));
+        expect(css).toContain('font-size: 16px !important;');
+        expect(css).not.toContain('font-size: 14px');
+    });
+
     it('气泡缩进对两侧生效；贴边侧让位', () => {
         const css = buildChatFineTuneCss({ chatBubbleIndent: 60 });
         expect(css).toContain('margin-left: 60px !important;');
@@ -45,5 +54,45 @@ describe('buildChatFineTuneCss', () => {
         expect(snapCss).toContain('margin-left: 0 !important;');
         expect(snapCss).not.toContain('margin-left: 60px');
         expect(snapCss).toContain('margin-right: 60px !important;');
+    });
+});
+
+// 「全局打底，角色可覆盖」合并规则：enabled 才生效；生效时已定义字段逐个覆盖，未定义跟随全局。
+
+describe('mergeChatFineTune', () => {
+    const global = { chatAvatarVisibility: 'hide_ai', chatBubbleFontSize: 14, chatBubbleIndent: 60, chatSnapToEdge: true } as const;
+
+    it('无覆盖 / enabled 缺省或 false → 完全跟随全局（设了字段也不生效）', () => {
+        expect(mergeChatFineTune(global)).toEqual(global);
+        expect(mergeChatFineTune(global, null)).toEqual(global);
+        expect(mergeChatFineTune(global, { chatBubbleFontSize: 16 })).toEqual(global);
+        expect(mergeChatFineTune(global, { enabled: false, chatBubbleFontSize: 16 })).toEqual(global);
+    });
+
+    it('enabled=true → 已定义字段逐个覆盖，未定义字段跟随全局', () => {
+        const merged = mergeChatFineTune(global, { enabled: true, chatBubbleFontSize: 16, chatAvatarAlign: 'top' });
+        expect(merged).toEqual({ ...global, chatBubbleFontSize: 16, chatAvatarAlign: 'top' });
+    });
+
+    it('显式默认值（0 / both / false）也算覆盖——角色可把某项压回默认', () => {
+        const merged = mergeChatFineTune(global, { enabled: true, chatBubbleFontSize: 0, chatAvatarVisibility: 'both', chatSnapToEdge: false });
+        expect(merged.chatBubbleFontSize).toBe(0);
+        expect(merged.chatAvatarVisibility).toBe('both');
+        expect(merged.chatSnapToEdge).toBe(false);
+        expect(merged.chatBubbleIndent).toBe(60); // 未覆盖的字段仍跟全局
+    });
+
+    it('返回浅拷贝且只含微调字段，不夹带 enabled / 其他主题键', () => {
+        const merged = mergeChatFineTune({ ...global, chatBubbleStyle: 'flat' } as any, { enabled: true });
+        expect(merged).not.toBe(global);
+        expect(merged).not.toHaveProperty('enabled');
+        expect(merged).not.toHaveProperty('chatBubbleStyle');
+        for (const key of Object.keys(merged)) expect(CHAT_FINE_TUNE_KEYS).toContain(key);
+    });
+
+    it('全局与覆盖都为空 → 空对象（buildChatFineTuneCss 得零输出）', () => {
+        const merged = mergeChatFineTune({}, { enabled: true });
+        expect(merged).toEqual({});
+        expect(buildChatFineTuneCss(merged)).toBe('');
     });
 });

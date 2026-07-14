@@ -5,7 +5,8 @@ import { DB } from '../utils/db';
 import { Message, MessageType, MemoryFragment, Emoji, EmojiCategory, DailySchedule, ScheduleSlot } from '../types';
 import { processImage } from '../utils/file';
 import { safeResponseJson, extractContent } from '../utils/safeApi';
-import { buildChatFineTuneCss } from '../utils/chatFineTuneCss';
+import { buildChatFineTuneCss, mergeChatFineTune } from '../utils/chatFineTuneCss';
+import ChatFineTunePanel from '../components/chat/ChatFineTunePanel';
 import { generateDailyScheduleForChar, isScheduleFeatureOn } from '../utils/scheduleGenerator';
 import { generateSlotTheater } from '../utils/theaterGenerator';
 import TheaterPlayer from '../components/schedule/TheaterPlayer';
@@ -108,7 +109,7 @@ const Chat: React.FC = () => {
     // Reply Logic
     const [replyTarget, setReplyTarget] = useState<Message | null>(null);
 
-    const [modalType, setModalType] = useState<'none' | 'transfer' | 'emoji-import' | 'chat-settings' | 'message-options' | 'edit-message' | 'delete-emoji' | 'delete-category' | 'add-category' | 'history-manager' | 'archive-settings' | 'prompt-editor' | 'category-options' | 'category-visibility' | 'emoji-options' | 'rename-emoji' | 'schedule' | 'chrome-css' | 'chrome-sound'>('none');
+    const [modalType, setModalType] = useState<'none' | 'transfer' | 'emoji-import' | 'chat-settings' | 'message-options' | 'edit-message' | 'delete-emoji' | 'delete-category' | 'add-category' | 'history-manager' | 'archive-settings' | 'prompt-editor' | 'category-options' | 'category-visibility' | 'emoji-options' | 'rename-emoji' | 'schedule' | 'chrome-css' | 'chrome-sound' | 'fine-tune'>('none');
     const [scheduleData, setScheduleData] = useState<DailySchedule | null>(null);
     // 小剧场（窥视演出）：正在播放的时段索引（null = 未打开），以及生成中标志
     const [theaterSlotIdx, setTheaterSlotIdx] = useState<number | null>(null);
@@ -1180,6 +1181,7 @@ const Chat: React.FC = () => {
             case 'settings': setModalType('chat-settings'); break;
             case 'chrome-css': setModalType('chrome-css'); break;
             case 'chrome-sound': setModalType('chrome-sound'); break;
+            case 'fine-tune': setModalType('fine-tune'); break;
             case 'emoji-import': setModalType('emoji-import'); break;
             case 'send-emoji': if (payload) handleSendText(payload.url, 'emoji'); break;
             case 'delete-emoji-req': setSelectedEmoji(payload); setModalType('delete-emoji'); break;
@@ -2516,8 +2518,9 @@ const Chat: React.FC = () => {
     // 动森下强制覆盖角色自定义聊天背景，保证整机一致的彩蛋观感
     // 进入/切换的过场由 CharacterEntryTransition 覆盖层负责，根容器不再自己做淡入。
     const finalRootStyle = acnh ? acnhRootStyle : chatRootStyle;
-    // 聊天细节微调 CSS（外观 → 聊天细节）：全默认时为空串，不注入任何 <style>
-    const chatFineTuneCss = useMemo(() => buildChatFineTuneCss(osTheme), [osTheme]);
+    // 聊天细节微调 CSS（外观 → 聊天细节，全局打底；角色开了「聊天装扮」时逐字段覆盖）：
+    // 全默认时为空串，不注入任何 <style>
+    const chatFineTuneCss = useMemo(() => buildChatFineTuneCss(mergeChatFineTune(osTheme, char?.chatFineTune)), [osTheme, char?.chatFineTune]);
     const chatAvatarSizeClass = osTheme.chatAvatarSize === 'small' ? 'w-7 h-7' : osTheme.chatAvatarSize === 'large' ? 'w-12 h-12' : 'w-9 h-9';
     const chatAvatarRadiusClass = osTheme.chatAvatarShape === 'square' ? 'rounded-sm' : osTheme.chatAvatarShape === 'rounded' ? 'rounded-xl' : 'rounded-full';
     const chatPendingAvatarClass = `${chatAvatarSizeClass} ${chatAvatarRadiusClass} object-cover`;
@@ -3288,6 +3291,65 @@ const Chat: React.FC = () => {
                     }}
                 />
             )}
+
+            {/* 角色专属「聊天装扮」Modal —— 从加号面板「聊天装扮」进入。全局打底，开了「为 TA 单独定制」
+                后已改动的字段逐个覆盖全局（写到 char.chatFineTune），上方聊天界面即实时预览。 */}
+            {char && modalType === 'fine-tune' && (() => {
+                const override = char.chatFineTune;
+                const customized = override?.enabled === true;
+                // 控件展示合并后的生效值：未覆盖的字段显示全局当前值，改哪个才覆盖哪个
+                const effective = mergeChatFineTune(osTheme, override);
+                return (
+                    <div className="fixed inset-0 z-[110] flex items-end justify-center bg-black/5" onClick={() => setModalType('none')}>
+                        <div
+                            className="w-full max-h-[68vh] overflow-y-auto rounded-t-3xl border-t border-white/60 bg-white/95 p-5 shadow-[0_-12px_40px_rgba(15,23,42,0.18)] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                            style={{ paddingBottom: 'calc(1.25rem + var(--safe-bottom))' }}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="mb-3 flex items-start justify-between">
+                                <div>
+                                    <div className="text-sm font-bold text-slate-800">聊天装扮 · {char.name}</div>
+                                    <div className="mt-0.5 text-[10px] text-slate-400">↑ 上方聊天界面即实时预览。头像显隐、对齐、字号行距这些细节，可以只给 TA 单独一套。</div>
+                                </div>
+                                <button onClick={() => setModalType('none')} className="px-2 text-xl leading-none text-slate-400 hover:text-slate-600">{'×'}</button>
+                            </div>
+                            <div className="mb-4 flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-2.5">
+                                <div className="min-w-0 pr-3">
+                                    <div className="text-[11px] font-bold text-slate-700">{customized ? '为 TA 单独定制中' : '跟随全局设置（默认）'}</div>
+                                    <div className="mt-0.5 text-[10px] text-slate-400">
+                                        {customized
+                                            ? '只有你改过的项目覆盖全局，其余仍跟随「外观 → 聊天界面」。关掉开关会回到跟随全局，定制内容保留。'
+                                            : '当前用的是「外观 → 聊天界面 → 聊天细节微调」的全局设置。打开开关即可为这个角色单独定制。'}
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => updateCharacter(char.id, { chatFineTune: { ...override, enabled: !customized } } as any)}
+                                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${customized ? 'bg-primary' : 'bg-slate-300'}`}
+                                    aria-pressed={customized}
+                                >
+                                    <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${customized ? 'left-[22px]' : 'left-0.5'}`} />
+                                </button>
+                            </div>
+                            {customized && (
+                                <>
+                                    <ChatFineTunePanel
+                                        value={effective}
+                                        onChange={(patch) => updateCharacter(char.id, { chatFineTune: { ...override, enabled: true, ...patch } } as any)}
+                                    />
+                                    <button
+                                        onClick={() => { updateCharacter(char.id, { chatFineTune: undefined } as any); addToast('已清除该角色的聊天装扮，回到跟随全局', 'success'); }}
+                                        className="mt-4 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-[11px] font-bold text-slate-500 transition-all hover:bg-slate-100 active:scale-[0.99]">
+                                        清除定制，回到跟随全局
+                                    </button>
+                                </>
+                            )}
+                            <p className="mt-3 text-[10px] leading-relaxed text-slate-400">
+                                只影响私聊界面，群聊不受影响。手写过「白框」自定义 CSS 的话不用担心：<b>自定义 CSS 优先级更高</b>，永远盖得过这里的设置。
+                            </p>
+                        </div>
+                    </div>
+                );
+            })()}
 
             {/* 角色专属「白框自定义」Modal —— 从加号面板「白框」进入；写到 char.chromeCustomCss，叠加在全局之上 */}
             {char && modalType === 'chrome-css' && (

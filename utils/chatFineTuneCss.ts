@@ -13,7 +13,30 @@
  * 全部字段缺省时返回空串（一个 <style> 都不注入，现状零变化）。
  */
 
-import type { OSTheme } from '../types';
+import type { OSTheme, ChatFineTuneFields, ChatFineTuneOverride } from '../types';
+
+/** 微调字段清单（合并 / 重置 / 快照都以这份为准，加字段只改这里一处）。 */
+export const CHAT_FINE_TUNE_KEYS = [
+    'chatAvatarVisibility', 'chatAvatarAlign', 'chatAvatarOffsetY',
+    'chatBubbleFontSize', 'chatBubbleLineHeight', 'chatBubbleIndent', 'chatSnapToEdge',
+] as const satisfies ReadonlyArray<keyof ChatFineTuneFields>;
+
+/**
+ * 「全局打底，角色可覆盖」的合并规则：
+ * - override 缺省或 enabled 不为 true → 原样返回全局值（角色完全跟随全局）；
+ * - enabled=true → 已定义（!== undefined）的字段逐个覆盖全局，未定义的字段跟随全局。
+ *   注意显式 0 / 'both' / false 也算「已定义」——角色可以借此把某项压回默认，
+ *   即使全局设了别的值（UI 的「回默认」按钮依赖这一点）。
+ * 返回值只含微调字段的浅拷贝，喂给 buildChatFineTuneCss 即可。
+ */
+export function mergeChatFineTune(global: ChatFineTuneFields, override?: ChatFineTuneOverride | null): ChatFineTuneFields {
+    const merged: ChatFineTuneFields = {};
+    for (const key of CHAT_FINE_TUNE_KEYS) {
+        const value = override?.enabled === true && override[key] !== undefined ? override[key] : global[key];
+        if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
+    }
+    return merged;
+}
 
 const AI_AVATAR = '.sully-chat-root .group.justify-start > [class~="absolute"][class~="z-0"]';
 const USER_AVATAR = '.sully-chat-root .group.justify-end > [class~="absolute"][class~="z-0"]';

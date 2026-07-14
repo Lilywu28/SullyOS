@@ -1,13 +1,28 @@
-import React from 'react';
-import { OSTheme } from '../../types';
+import React, { useState } from 'react';
+import { AppID, OSTheme, ChatFineTuneFields } from '../../types';
 import WhiteboxSoundEditor from '../chat/WhiteboxSoundEditor';
 import { WhiteboxSound } from '../../utils/whiteboxSound';
+import ChatFineTunePanel from '../chat/ChatFineTunePanel';
 
 type Props = {
     theme: OSTheme;
     updateTheme: (updates: Partial<OSTheme>) => void;
     /** 一键还原全部聊天白框 CSS（全局 + 每个角色），兼作坏 CSS 救援。 */
     onResetAllChrome?: () => void;
+    /** 「进阶装扮」区块的跳转（如一键去气泡工坊）。 */
+    onOpenApp?: (appId: AppID) => void;
+};
+
+// 聊天细节微调的默认值快照。切预设时先铺这层再叠预设配置：否则从「沉浸剧场」切回
+// 其他预设时，隐藏头像/贴边等残留字段不会被清掉（旧预设没写这些键）——不留残留的既有惯例。
+const FINE_TUNE_DEFAULTS: Required<ChatFineTuneFields> = {
+    chatAvatarVisibility: 'both',
+    chatAvatarAlign: 'bottom',
+    chatAvatarOffsetY: 0,
+    chatBubbleFontSize: 0,
+    chatBubbleLineHeight: 0,
+    chatBubbleIndent: 0,
+    chatSnapToEdge: false,
 };
 
 const presets: Array<{ name: string; desc: string; config: Partial<OSTheme> }> = [
@@ -109,6 +124,53 @@ const presets: Array<{ name: string; desc: string; config: Partial<OSTheme> }> =
             chatInputStyle: 'ios',
             chatSendButtonStyle: 'circle',
             chatShowTimestamp: 'always',
+        },
+    },
+    {
+        name: '沉浸剧场',
+        desc: '无头像+贴边+松行距',
+        config: {
+            chatChromeStyle: 'flat',
+            chatBackgroundStyle: 'plain',
+            chatHeaderStyle: 'minimal',
+            chatHeaderAlign: 'center',
+            chatHeaderDensity: 'compact',
+            chatStatusStyle: 'subtle',
+            chatAvatarShape: 'circle',
+            chatAvatarSize: 'medium',
+            chatAvatarMode: 'grouped',
+            chatBubbleStyle: 'flat',
+            chatMessageSpacing: 'spacious',
+            chatInputStyle: 'flat',
+            chatSendButtonStyle: 'minimal',
+            chatShowTimestamp: 'never',
+            chatAvatarVisibility: 'hide_both',
+            chatSnapToEdge: true,
+            chatBubbleLineHeight: 1.5,
+        },
+    },
+    {
+        name: '紧凑密聊',
+        desc: '小字紧排+顶对齐头像',
+        config: {
+            chatChromeStyle: 'flat',
+            chatBackgroundStyle: 'plain',
+            chatHeaderStyle: 'default',
+            chatHeaderAlign: 'left',
+            chatHeaderDensity: 'compact',
+            chatStatusStyle: 'dot',
+            chatAvatarShape: 'rounded',
+            chatAvatarSize: 'small',
+            chatAvatarMode: 'grouped',
+            chatBubbleStyle: 'flat',
+            chatMessageSpacing: 'compact',
+            chatInputStyle: 'flat',
+            chatSendButtonStyle: 'minimal',
+            chatShowTimestamp: 'never',
+            chatAvatarVisibility: 'both',
+            chatAvatarAlign: 'top',
+            chatBubbleFontSize: 13,
+            chatBubbleLineHeight: 1.35,
         },
     },
     {
@@ -236,6 +298,11 @@ const choices = {
         { value: 'hover', label: '悬停（电脑）' },
         { value: 'never', label: '不显示' },
     ],
+    emojiSize: [
+        { value: 'small', label: '小', desc: '96px' },
+        { value: 'medium', label: '中', desc: '128px' },
+        { value: 'large', label: '大', desc: '160px · 旧版' },
+    ],
 } as const;
 
 const cardButton = (active: boolean) =>
@@ -322,7 +389,7 @@ const ChoiceGroup: React.FC<{
     </div>
 );
 
-export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onResetAllChrome }) => {
+export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onResetAllChrome, onOpenApp }) => {
     const avatarShape = theme.chatAvatarShape || defaults.chatAvatarShape;
     const avatarSize = theme.chatAvatarSize || defaults.chatAvatarSize;
     const avatarMode = theme.chatAvatarMode || defaults.chatAvatarMode;
@@ -339,6 +406,17 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
     const sendButtonStyle = theme.chatSendButtonStyle || defaults.chatSendButtonStyle;
     const pendingIndicator = theme.chatPendingIndicator !== false;
     const showHeaderBuffs = theme.chatHideHeaderBuffs !== true;
+    const [showStyleHelp, setShowStyleHelp] = useState(false);
+
+    // 聊天细节微调 → 预览联动（近似演示：字号按比例缩小 3px 以配合迷你预览）
+    const fineVis = theme.chatAvatarVisibility || 'both';
+    const hidePreviewAiAvatar = fineVis === 'hide_ai' || fineVis === 'hide_both';
+    const hidePreviewUserAvatar = fineVis === 'hide_user' || fineVis === 'hide_both';
+    const previewRowAlign = (theme.chatAvatarAlign || 'bottom') === 'top' ? 'items-start' : theme.chatAvatarAlign === 'center' ? 'items-center' : 'items-end';
+    const previewFineTextStyle: React.CSSProperties = {
+        ...(theme.chatBubbleFontSize ? { fontSize: `${Math.max(9, theme.chatBubbleFontSize - 3)}px` } : {}),
+        ...(theme.chatBubbleLineHeight ? { lineHeight: theme.chatBubbleLineHeight } : {}),
+    };
 
     const headerClass =
         headerStyle === 'minimal'
@@ -376,7 +454,7 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
                     {presets.map((preset) => (
                         <button
                             key={preset.name}
-                            onClick={() => updateTheme(preset.config)}
+                            onClick={() => updateTheme({ ...FINE_TUNE_DEFAULTS, ...preset.config })}
                             className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left transition-all hover:border-primary/30 hover:bg-white active:scale-[0.98]"
                         >
                             <div className="text-xs font-bold text-slate-700">{preset.name}</div>
@@ -422,15 +500,15 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
                             const shouldShowAvatar = avatarMode === 'every_message' || nextRole !== message.role;
                             const avatarTone = isUser ? 'bg-primary/25' : 'bg-pink-200';
                             return (
-                                <div key={message.id} className={`flex items-end gap-2 ${isUser ? 'justify-end' : ''}`}>
-                                    {!isUser && <div className={`${avatarClass(avatarShape, avatarSize)} shrink-0 ${avatarTone} ${shouldShowAvatar ? '' : 'opacity-0'}`} />}
-                                    <div style={previewBubbleStyle(bubbleStyle, isUser, theme)}>
+                                <div key={message.id} className={`flex ${previewRowAlign} gap-2 ${isUser ? 'justify-end' : ''}`}>
+                                    {!isUser && !hidePreviewAiAvatar && <div className={`${avatarClass(avatarShape, avatarSize)} shrink-0 ${avatarTone} ${shouldShowAvatar ? '' : 'opacity-0'}`} />}
+                                    <div style={{ ...previewBubbleStyle(bubbleStyle, isUser, theme), ...previewFineTextStyle }}>
                                         {message.text}
                                         {showTimestamp === 'always' && nextRole !== message.role && (
                                             <div className={`mt-1 text-right text-[8px] ${isUser ? 'opacity-70' : 'opacity-55'}`}>{isUser ? '14:33' : '14:32'}</div>
                                         )}
                                     </div>
-                                    {isUser && <div className={`${avatarClass(avatarShape, avatarSize)} shrink-0 ${avatarTone} ${shouldShowAvatar ? '' : 'opacity-0'}`} />}
+                                    {isUser && !hidePreviewUserAvatar && <div className={`${avatarClass(avatarShape, avatarSize)} shrink-0 ${avatarTone} ${shouldShowAvatar ? '' : 'opacity-0'}`} />}
                                 </div>
                             );
                         })}
@@ -512,6 +590,31 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
                         <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${pendingIndicator ? 'left-[22px]' : 'left-0.5'}`} />
                     </button>
                 </div>
+            </section>
+
+            <section className={groupClass}>
+                <ChoiceGroup title="表情包大小" items={choices.emojiSize} value={theme.chatEmojiSize || 'small'} onPick={(value) => updateTheme({ chatEmojiSize: value as OSTheme['chatEmojiSize'] })} />
+                <p className="mt-2 text-[10px] text-slate-400">聊天和群聊里发出的表情包图片尺寸。用自定义 CSS 调过尺寸的美化会继续覆盖这里的设置。</p>
+            </section>
+
+            {/* 聊天细节微调 —— 收编社区白框美化的可视化版（控件组件与聊天内「聊天装扮」弹窗共用） */}
+            <section className={groupClass}>
+                <div className="mb-3">
+                    <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">聊天细节微调</h2>
+                    <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                        头像显隐/对齐、贴边、字号行距——不用再手写 CSS，改动实时反映在上方预览里。
+                        手写过美化代码的老用户不受影响：<b>你的自定义 CSS 优先级更高</b>，永远盖得过这里。
+                    </p>
+                </div>
+                <ChatFineTunePanel value={theme} onChange={(patch) => updateTheme(patch)} />
+                <button
+                    onClick={() => updateTheme({ ...FINE_TUNE_DEFAULTS })}
+                    className="mt-4 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-[11px] font-bold text-slate-500 transition-all hover:bg-slate-100 active:scale-[0.99]">
+                    微调全部回默认（一键清残留）
+                </button>
+                <p className="mt-2 text-[10px] text-slate-400">
+                    这里设置的是全局打底。想给某个角色单独一套？进 ta 的聊天 → 「＋」菜单 → 「聊天装扮」。
+                </p>
             </section>
 
             <section className={groupClass}>
